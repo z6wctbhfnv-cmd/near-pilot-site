@@ -632,6 +632,60 @@ function bindCommandBox(id, tradeOnly, rerender) {
   }));
 }
 
+// Full settings of one script. Sections 1-2 (logic, assets) belong to the holder and start a new
+// version; open parameters are the logic knobs the holder exposed to copiers; sections 3-5 change only
+// how the script trades for this owner and never touch its public record.
+const TS_DEFAULTS = { maxAsset: "", maxLeverage: "", allowShorts: true, positionStop: "", takeProfit: "", trailingStop: "",
+  fundingCap: "", minTrade: 1, orderType: "market", maxSlippage: 0.3, cadence: 24, hoursFrom: 0, hoursTo: 24 };
+
+function scriptPanel(x, s, chain) {
+  const c = chain[x.id] || {};
+  const own = !!state.owner && c.holder === state.owner.account_id;
+  const asHolder = own || state.demoHolder === x.id;
+  const ts = { ...TS_DEFAULTS, ...((s.scriptSettings || {})[x.id] || {}) };
+  const tuned = (s.tunedParams || {})[x.id] || {};
+  const num = (k, v, unit, extra = "") => `<input type="number" data-ts="${esc(x.id)}" data-k="${k}" value="${v}" ${extra} style="width:76px"> ${unit}`;
+  const row = (label, ctl, note = "") => `<div class="row" style="justify-content:space-between;border-top:1px solid var(--line);padding:6px 0"><span class="small">${label}${note ? ` <span class="muted small">${note}</span>` : ""}</span><span class="row small">${ctl}</span></div>`;
+  const live = `<span class="chip">applies live</span>`;
+  const params = x.params || {};
+  const logic = asHolder
+    ? Object.entries(params).map(([k, v]) => row(esc(k.replace(/_/g, " ")), `<input type="text" data-lp="${esc(x.id)}" data-k="${esc(k)}" value="${esc(Array.isArray(v) ? v.join(", ") : v)}" style="width:140px">`)).join("")
+    : `<p class="muted small" style="margin:6px 0">The holder keeps this script's logic and assets private.</p>`;
+  const open = (c.openParams || []).map((op) => row(esc(op.label || op.name),
+    `<input type="range" data-op="${esc(x.id)}" data-k="${esc(op.name)}" min="${op.min}" max="${op.max}" step="${op.step || (op.max - op.min) / 20}" value="${tuned[op.name] ?? op.default}" style="width:140px"> <b>${tuned[op.name] ?? op.default}</b>`,
+    `default ${op.default}`)).join("");
+  const fee = c.fee ? `${(c.fee.bps / 100).toFixed(c.fee.bps % 100 ? 2 : 0)}%${c.fee.next ? ` → ${(c.fee.next / 100).toFixed(0)}% from ${esc(DATE.format(new Date(c.fee.at)))}` : ""}` : "5%";
+  return `<div class="stack" style="border-top:1px solid var(--line);padding-top:8px">
+    <div class="row" style="justify-content:space-between"><b class="small">1–2. Logic and assets</b>
+      ${asHolder ? `<span class="chip amber">changing these starts v${(c.version || 1) + 1}, record restarts</span>` : `<span class="chip">private</span>`}</div>
+    ${logic}
+    ${asHolder ? `<div class="row"><button class="btn sm" data-newver="${esc(x.id)}" type="button">Save as v${(c.version || 1) + 1}</button></div>` : ""}
+    ${!asHolder && open ? `<b class="small">Parameters the holder opened</b>${open}<p class="muted small" style="margin:0">Your tuned values trade your money only; the public record stays at the holder's defaults.</p>` : ""}
+    ${!asHolder && !open ? `<p class="muted small" style="margin:0">The holder opened no parameters for copiers.</p>` : ""}
+    <b class="small">3. Size and risk <span class="muted">· your account only, record unchanged</span></b>
+    ${row("Max in one asset", num("maxAsset", ts.maxAsset, "%", 'min="1" max="100" placeholder="off"'))}
+    ${row("Max leverage", num("maxLeverage", ts.maxLeverage, "x", 'min="0.1" max="3" step="0.1" placeholder="1"'))}
+    ${row("Allow shorts", `<input type="checkbox" data-tsb="${esc(x.id)}" data-k="allowShorts" ${ts.allowShorts ? "checked" : ""}>`)}
+    ${row("Script stop (pause at drawdown)", `<input type="number" data-stop="${esc(x.id)}" value="${s.stops[x.id] != null ? Math.round(s.stops[x.id] * 100) : ""}" placeholder="off" min="1" max="90" style="width:76px"> %`)}
+    ${row("Position stop-loss · take-profit", `${num("positionStop", ts.positionStop, "%", 'min="1" max="100" placeholder="off"')} ${num("takeProfit", ts.takeProfit, "%", 'min="1" max="1000" placeholder="off"')} ${live}`)}
+    ${row("Trailing stop", `${num("trailingStop", ts.trailingStop, "%", 'min="1" max="100" placeholder="off"')} ${live}`)}
+    <b class="small">4. Execution</b>
+    ${row("Skip long perps when funding is above", num("fundingCap", ts.fundingCap, "%/yr", 'min="1" max="500" placeholder="off"'))}
+    ${row("Minimum trade", `$${num("minTrade", ts.minTrade, "", 'min="1" max="10000"')}`)}
+    ${row("Order type", `<select data-tss="${esc(x.id)}" data-k="orderType">${[["market", "Market"], ["limit", "Limit at mid"], ["twap", "In parts (TWAP)"]].map(([k, l]) => `<option value="${k}" ${ts.orderType === k ? "selected" : ""}>${l}</option>`).join("")}</select> ${live}`)}
+    ${row("Max slippage", `${num("maxSlippage", ts.maxSlippage, "%", 'min="0.01" max="5" step="0.01"')} ${live}`)}
+    <b class="small">5. Schedule</b>
+    ${row("Recalculate every", `<select data-tss="${esc(x.id)}" data-k="cadence">${[[1, "hour"], [4, "4 hours"], [24, "day"], [168, "week"]].map(([k, l]) => `<option value="${k}" ${+ts.cadence === k ? "selected" : ""}>${l}</option>`).join("")}</select> ${live}`)}
+    ${row("Trading hours (UTC)", `${num("hoursFrom", ts.hoursFrom, "–", 'min="0" max="23"')}${num("hoursTo", ts.hoursTo, "", 'min="1" max="24"')} ${live}`)}
+    ${asHolder ? `<b class="small">6. Publishing</b>
+      ${row("Show on the leaderboard", `<input type="checkbox" checked disabled> <span class="muted small">set_hidden</span>`)}
+      ${row("Copy fee (0–10%)", `<input type="number" id="fee-${esc(x.id)}" min="0" max="10" step="0.5" value="${c.fee ? c.fee.bps / 100 : 5}" style="width:76px"> % <button class="btn sm ghost" data-setfee="${esc(x.id)}" type="button">Set</button>`, "raises apply after 7 days")}
+      ${row("For sale at", `<input type="number" id="price-${esc(x.id)}" min="0" step="0.5" placeholder="not for sale" style="width:110px"> NEAR <button class="btn sm ghost" data-list="${esc(x.id)}" type="button">List</button>`)}`
+      : row("Copy fee", `<b>${fee}</b> of your new profit`, "set by the holder")}
+    ${!own ? `<button class="btn sm ghost" data-demoholder="${esc(x.id)}" type="button" style="align-self:flex-start">${asHolder ? "Back to copier view" : "Demo: view as this script's holder"}</button>` : ""}
+  </div>`;
+}
+
 function agentView() {
   const list = state.data.report.strategies;
   const known = list.map((x) => x.id);
@@ -700,12 +754,14 @@ function agentView() {
         ${state.confirmRemove === x.id
           ? `<button class="btn sm danger" data-rm="${esc(x.id)}" type="button">Confirm remove</button><button class="btn sm ghost" data-rmno type="button">Keep</button>`
           : `<button class="btn sm ghost" data-rmask="${esc(x.id)}" type="button">Remove</button>`}
-        <button class="btn sm ghost" data-copy="${esc(x.id)}" type="button">Copy · 5% of profit</button>
+        <button class="btn sm ghost" data-panel="${esc(x.id)}" type="button" aria-expanded="${state.panel === x.id}">${state.panel === x.id ? "Close settings" : "Settings"}</button>
+        <button class="btn sm ghost" data-copy="${esc(x.id)}" type="button">Copy · ${chain[x.id]?.fee ? (chain[x.id].fee.bps / 100).toFixed(chain[x.id].fee.bps % 100 ? 2 : 0) : 5}% of profit</button>
         <button class="btn sm" data-buy="${esc(x.id)}" type="button">${price ? "Buy for " + (Number(BigInt(price) / 10n ** 21n) / 1000).toLocaleString("en-US") + " NEAR" : "Make an offer"}</button>
       </div>
       ${state.advanced ? `<div class="row small" style="gap:16px;border-top:1px solid var(--line);padding-top:8px">
         <label class="row">Max share <input type="number" min="1" max="100" step="1" data-cap="${esc(x.id)}" value="${s.caps[x.id] != null ? Math.round(s.caps[x.id] * 100) : ""}" placeholder="${Math.round(s.maxWeight * 100)}" style="width:64px">%</label>
         <label class="row">Pause if its drawdown exceeds <input type="number" min="1" max="90" step="1" data-stop="${esc(x.id)}" value="${s.stops[x.id] != null ? Math.round(s.stops[x.id] * 100) : ""}" placeholder="off" style="width:64px">%</label></div>` : ""}
+      ${state.panel === x.id ? scriptPanel(x, s, chain) : ""}
       ${state.nftAction?.id === x.id ? `<pre class="code" translate="no">${esc(state.nftAction.text)}</pre>` : ""}
     </article>`;
   };
@@ -847,6 +903,34 @@ function agentView() {
     toast(`${id} removed from your agent`);
   }));
   if ($("#restore")) $("#restore").onclick = () => set({ removed: [] });
+  document.querySelectorAll("[data-panel]").forEach((b) => (b.onclick = () => { state.panel = state.panel === b.dataset.panel ? null : b.dataset.panel; agentView(); }));
+  document.querySelectorAll("[data-demoholder]").forEach((b) => (b.onclick = () => { state.demoHolder = state.demoHolder === b.dataset.demoholder ? null : b.dataset.demoholder; agentView(); }));
+  const setTs = (id, k, v) => set({ scriptSettings: { ...(s.scriptSettings || {}), [id]: { ...((s.scriptSettings || {})[id] || {}), [k]: v } } });
+  document.querySelectorAll("[data-ts]").forEach((b) => (b.onchange = () => setTs(b.dataset.ts, b.dataset.k, b.value === "" ? "" : +b.value)));
+  document.querySelectorAll("[data-tsb]").forEach((b) => (b.onchange = () => setTs(b.dataset.tsb, b.dataset.k, b.checked)));
+  document.querySelectorAll("[data-tss]").forEach((b) => (b.onchange = () => setTs(b.dataset.tss, b.dataset.k, b.value)));
+  document.querySelectorAll("[data-op]").forEach((b) => {
+    b.oninput = () => (b.nextElementSibling.textContent = b.value);
+    b.onchange = () => set({ tunedParams: { ...(s.tunedParams || {}), [b.dataset.op]: { ...((s.tunedParams || {})[b.dataset.op] || {}), [b.dataset.k]: +b.value } } });
+  });
+  const nftC = CONFIG.nft?.contract || "<nft-contract>";
+  const holderCmd = (id, method, args, deposit = "0 NEAR") => showAction(id, `Signed by the script's holder. The site signs this with your wallet once the backend is connected; the same transaction from the CLI:\n\nnear contract call-function as-transaction ${nftC} ${method} json-args '${JSON.stringify(args)}' prepaid-gas '50 Tgas' attached-deposit '${deposit}' sign-as <holder>.testnet network-config testnet sign-with-keychain send`);
+  document.querySelectorAll("[data-setfee]").forEach((b) => (b.onclick = () => {
+    const pctv = Math.max(0, Math.min(10, +$(`#fee-${CSS.escape(b.dataset.setfee)}`).value || 0));
+    holderCmd(b.dataset.setfee, "set_copy_fee", { token_id: b.dataset.setfee, bps: Math.round(pctv * 100) });
+  }));
+  document.querySelectorAll("[data-list]").forEach((b) => (b.onclick = () => {
+    const near = +$(`#price-${CSS.escape(b.dataset.list)}`).value;
+    if (!(near > 0)) { toast("Enter a price in NEAR"); return; }
+    holderCmd(b.dataset.list, "list_for_sale", { token_id: b.dataset.list, price: (BigInt(Math.round(near * 1000)) * 10n ** 21n).toString() }, "0.01 NEAR");
+  }));
+  document.querySelectorAll("[data-newver]").forEach((b) => (b.onclick = async () => {
+    const id = b.dataset.newver;
+    const vals = {};
+    document.querySelectorAll(`[data-lp="${CSS.escape(id)}"]`).forEach((i) => (vals[i.dataset.k] = i.value));
+    const hash = await agent.sha256(JSON.stringify({ id, params: vals }));
+    holderCmd(id, "update_script", { token_id: id, code_hash: hash }, "0.01 NEAR");
+  }));
   document.querySelectorAll("[data-pause]").forEach((b) => (b.onclick = () => set({ paused: [...new Set([...(s.paused || []), b.dataset.pause])] })));
   $("#on-problem").onchange = (e) => set({ onProblem: e.target.value });
   $("#on-change").onchange = (e) => set({ onScriptChange: e.target.value });

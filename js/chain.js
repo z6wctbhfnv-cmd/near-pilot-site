@@ -24,7 +24,7 @@ export async function scriptsOnChain(ids) {
     try {
       const info = await view("strategy_info", { token_id: id });
       if (!info) return;
-      const [holder, record, followers, fees, price, hidden, version] = await Promise.all([
+      const [holder, record, followers, fees, price, hidden, version, fee, params] = await Promise.all([
         view("revenue_receiver", { token_id: id }),
         view("record", { token_id: id, from_index: 0, limit: 200 }),
         view("follower_count", { token_id: id }),
@@ -32,8 +32,11 @@ export async function scriptsOnChain(ids) {
         view("sale_price", { token_id: id }).catch(() => null),
         view("is_hidden", { token_id: id }).catch(() => false),
         view("script_version", { token_id: id }).catch(() => [1, 0]),
+        view("copy_fee", { token_id: id }).catch(() => [500, 0, 0]),
+        view("open_params", { token_id: id }).catch(() => "[]"),
       ]);
-      out[id] = { info, holder, record, followers, fees, price, hidden, version: version[0], changedAt: version[1] };
+      out[id] = { info, holder, record, followers, fees, price, hidden, version: version[0], changedAt: version[1],
+        fee: { bps: fee[0], next: fee[1], at: fee[2] }, openParams: (() => { try { return JSON.parse(params); } catch { return []; } })() };
     } catch (e) {
       out[id] = { error: String(e.message || e) };
     }
