@@ -329,14 +329,18 @@ async function doSign() {
 }
 
 // ---------------------------------------------------------------------------------------------
-const LB_COLS = [
-  { key: "2y", label: "2 years", get: (x) => x.periods?.["2y"] ?? x.record_return, fmt: (v) => signed(v) },
-  { key: "1y", label: "1 year", get: (x) => x.periods?.["1y"], fmt: (v) => signed(v) },
-  { key: "1m", label: "1 month", get: (x) => x.periods?.["1m"], fmt: (v) => signed(v) },
-  { key: "ratio", label: "Return / drop", get: (x) => (x.periods?.["2y"] ?? x.record_return) / Math.max(x.record_max_drawdown, 0.01), fmt: (v) => v.toFixed(2) },
-  { key: "dd", label: "Worst drop", get: (x) => -x.record_max_drawdown, fmt: (v) => pct(-v, 0) },
-  { key: "followers", label: "Copiers", get: (x) => Number(state.chain?.[x.id]?.followers ?? 0), fmt: (v) => String(v) },
-];
+// Leaderboard: period, % or $, filters. Modeled on exchange copy-trading boards (period tabs,
+// ROI / PnL / max drawdown / copiers), with return-per-drawdown as the default sort.
+const LB_PERIODS = [["7d", 7, "7 days"], ["30d", 30, "30 days"], ["90d", 90, "90 days"], ["180d", 180, "180 days"], ["1y", 365, "1 year"], ["all", 100000, "All time"]];
+
+function lbStats(x, days, capital) {
+  const r = x.daily_returns || [];
+  const w = r.slice(-days);
+  let eq = 1, peak = 1, mdd = 0;
+  for (const d of w) { eq *= 1 + d; peak = Math.max(peak, eq); mdd = Math.max(mdd, 1 - eq / peak); }
+  const roi = eq - 1;
+  return { roi, pnl: roi * capital, mdd, ratio: roi / Math.max(mdd, 0.01), days: r.length };
+}
 
 function strategies() {
   const list = state.data.report.strategies;
@@ -345,41 +349,57 @@ function strategies() {
     scriptsOnChain(list.map((s) => s.id)).then((c) => { state.chain = c; if (location.hash.includes("strategies")) strategies(); });
   }
   const chain = state.chain || {};
-  const sortKey = state.lbSort || "ratio";
-  const col = LB_COLS.find((c) => c.key === sortKey);
-  const ranked = [...list].sort((a, b) => (col.get(b) ?? -1e9) - (col.get(a) ?? -1e9));
-  const cell = (c, x) => {
-    const v = c.get(x);
-    if (v == null || Number.isNaN(v)) return "—";
-    const cls = ["2y", "1y", "1m"].includes(c.key) ? (v >= 0 ? "pos" : "neg") : "";
-    return `<span class="${cls}">${c.fmt(v)}</span>`;
-  };
-  const holder = (id) => chain[id]?.holder ? `<span translate="no">${esc(chain[id].holder)}</span>` : "—";
-  const onchain = (x) => {
-    const c = chain[x.id];
-    if (!CONFIG.nft?.contract || !c) return "";
-    if (c.error) return `<span class="muted small">chain: ${esc(c.error)}</span>`;
-    return c.info?.code_hash === x.code_hash ? `<span class="chip green">on-chain ✓</span>` : `<span class="chip red">hash differs</span>`;
-  };
+  const lb = (state.lb ||= { period: "90d", unit: "pct", capital: 10000, sort: "ratio", maxDd: null, perps: "all", positive: false });
+  const days = LB_PERIODS.find((p) => p[0] === lb.period)[1];
+  const hiddenCount = list.filter((x) => chain[x.id]?.hidden).length;
+  const rows = list
+    .filter((x) => !chain[x.id]?.hidden)
+    .map((x) => ({ x, st: lbStats(x, days, lb.capital), copiers: Number(chain[x.id]?.followers ?? 0) }))
+    .filter(({ x, st }) => (lb.maxDd == null || st.mdd <= lb.maxDd) && (lb.perps === "all" || (lb.perps === "spot") === !x.uses_perps) && (!lb.positive || st.roi > 0));
+  const sorters = { roi: (r) => r.st.roi, mdd: (r) => -r.st.mdd, ratio: (r) => r.st.ratio, copiers: (r) => r.copiers };
+  rows.sort((a, b) => sorters[lb.sort](b) - sorters[lb.sort](a));
+  const ret = (st) => lb.unit === "pct" ? `<span class="${st.roi >= 0 ? "pos" : "neg"}">${signed(st.roi)}</span>`
+    : `<span class="${st.pnl >= 0 ? "pos" : "neg"}">${st.pnl >= 0 ? "+" : "−"}${usd(Math.abs(st.pnl))}</span>`;
+  const th = (key, label) => `<th><button type="button" class="chip toggle" data-sort="${key}" aria-pressed="${lb.sort === key}">${label}${lb.sort === key ? " ↓" : ""}</button></th>`;
+  const seg = (name, opts, cur) => `<div class="row" role="group" aria-label="${name}">${opts.map(([v, l]) => `<button type="button" class="chip toggle" data-${name}="${v}" aria-pressed="${String(cur) === String(v)}">${l}</button>`).join("")}</div>`;
   $("#view").innerHTML = `
     <div class="head"><div><h1>Leaderboard</h1>
-      <p class="lede">Every script is an NFT. Its record is public; its code and settings are not (the NFT holds only the code's hash). Buy a script outright, or copy it and pay 5% of your new profit to its holder.</p></div>
+      <p class="lede">The best scripts to copy or buy. Every script is an NFT: its record is public, its code and settings are not (the NFT holds only the code's hash). Copying costs 5% of your new profit, paid to the script's holder.</p></div>
       <span class="chip amber"><span class="d"></span>Backtest records until scripts trade live</span></div>
-    <div class="card" style="overflow-x:auto">
+    <div class="card stack">
+      ${seg("period", LB_PERIODS.map((p) => [p[0], p[2]]), lb.period)}
+      <div class="row" style="gap:16px">
+        ${seg("unit", [["pct", "ROI %"], ["usd", "PnL $"]], lb.unit)}
+        ${lb.unit === "usd" ? `<label class="row small">on <input type="number" id="lb-cap" min="100" step="100" value="${lb.capital}" style="width:110px"> USD</label>` : ""}
+        ${seg("perps", [["all", "All"], ["spot", "Spot only"], ["perps", "With perps"]], lb.perps)}
+        <label class="row small">Max drawdown
+          <select id="lb-dd"><option value="">any</option>${[0.05, 0.1, 0.2, 0.3].map((v) => `<option value="${v}" ${lb.maxDd === v ? "selected" : ""}>${pct(v, 0)}</option>`).join("")}</select></label>
+        <label class="row small"><input type="checkbox" id="lb-pos" ${lb.positive ? "checked" : ""}> profitable only</label>
+      </div>
+    </div>
+    <div class="card" style="overflow-x:auto;margin-top:16px">
       <table class="tbl"><thead><tr><th>#</th><th>Script</th>
-        ${LB_COLS.map((c) => `<th><button type="button" class="chip toggle" data-sort="${c.key}" aria-pressed="${c.key === sortKey}">${c.label}${c.key === sortKey ? " ↓" : ""}</button></th>`).join("")}
-        <th>Holder</th><th>For sale</th><th></th></tr></thead>
-      <tbody>${ranked.map((x, i) => `<tr>
+        ${th("roi", lb.unit === "pct" ? "ROI" : "PnL")}${th("mdd", "Max drawdown")}${th("ratio", "Return / drop")}<th>Days running</th>${th("copiers", "Copiers")}<th>Holder</th><th>For sale</th><th></th></tr></thead>
+      <tbody>${rows.map(({ x, st, copiers }, i) => `<tr>
         <td>${i + 1}</td>
         <td><b>${esc(title(x.id))}</b> <span class="muted small" translate="no">${esc(x.id)}</span>${x.uses_perps ? ` <span class="chip">perps</span>` : ""}</td>
-        ${LB_COLS.map((c) => `<td>${cell(c, x)}</td>`).join("")}
-        <td>${holder(x.id)}</td>
+        <td>${ret(st)}</td><td>${pct(st.mdd, 1)}</td><td>${st.ratio.toFixed(2)}</td>
+        <td>${st.days} <span class="muted small">backtest</span></td><td>${copiers}</td>
+        <td>${chain[x.id]?.holder ? `<span translate="no">${esc(chain[x.id].holder)}</span>` : "—"}</td>
         <td>${chain[x.id]?.price ? (Number(BigInt(chain[x.id].price) / 10n ** 21n) / 1000).toLocaleString("en-US") + " NEAR" : "—"}</td>
-        <td>${onchain(x)}</td></tr>`).join("")}</tbody></table>
-      <p class="muted small" style="margin:10px 0 0">Ranked by ${esc(col.label.toLowerCase())}. “Return / drop” is the 2-year return divided by the worst drop: it rewards steady scripts over lucky ones. Buy and copy are on each script's card on the Agent page.</p>
+        <td>${chain[x.id]?.info ? (chain[x.id].info.code_hash === x.code_hash ? `<span class="chip green">on-chain ✓</span>` : `<span class="chip red">hash differs</span>`) : ""}</td></tr>`).join("")
+        || `<tr><td colspan="10" class="muted small">No script matches these filters.</td></tr>`}</tbody></table>
+      <p class="muted small" style="margin:10px 0 0">${LB_PERIODS.find((p) => p[0] === lb.period)[2]}. ${lb.unit === "usd" ? `PnL on ${usd(lb.capital)} copied at the start of the period. ` : ""}“Return / drop” divides the return by the worst drop: it rewards steady scripts over lucky ones.${hiddenCount ? ` ${hiddenCount} script${hiddenCount > 1 ? "s are" : " is"} hidden by ${hiddenCount > 1 ? "their holders" : "its holder"}.` : ""} Copy and buy from each script's card on the Agent page.</p>
     </div>
-    <div class="note" style="margin-top:16px">How the agent picks: it is a risk manager, not a talent scout. A script is hired once it has enough history to measure its risk and is not in a deep drawdown, fired only for breaking a risk rule, and capital is split by inverse volatility, never by last month's returns.</div>`;
-  document.querySelectorAll("[data-sort]").forEach((b) => (b.onclick = () => { state.lbSort = b.dataset.sort; strategies(); }));
+    <div class="note" style="margin-top:16px">Holders can hide their script from this board at any time (<code translate="no">set_hidden</code>); the NFT and its record stay on chain.</div>`;
+  const set = (patch) => { Object.assign(lb, patch); strategies(); };
+  document.querySelectorAll("[data-period]").forEach((b) => (b.onclick = () => set({ period: b.dataset.period })));
+  document.querySelectorAll("[data-unit]").forEach((b) => (b.onclick = () => set({ unit: b.dataset.unit })));
+  document.querySelectorAll("[data-perps]").forEach((b) => (b.onclick = () => set({ perps: b.dataset.perps })));
+  document.querySelectorAll("[data-sort]").forEach((b) => (b.onclick = () => set({ sort: b.dataset.sort })));
+  $("#lb-dd").onchange = (e) => set({ maxDd: e.target.value ? +e.target.value : null });
+  $("#lb-pos").onchange = (e) => set({ positive: e.target.checked });
+  if ($("#lb-cap")) $("#lb-cap").onchange = (e) => set({ capital: Math.max(100, +e.target.value || 10000) });
 }
 const TITLES = {
   "hold-rebalance": "Hold & rebalance (baseline)", "momentum-top2": "Momentum rotation", "vol-target": "Volatility target",
@@ -575,7 +595,9 @@ function agentView() {
   const sim = state.data.variants[v.key];
   const draft = state.agentDraft;
   const script = (state.script ||= { idea: "", code: agent.EXAMPLE_SCRIPT, hash: "", problems: [] });
-  const manual = s.pinned.length > 0;
+  const mode = s.select || (s.pinned.length ? "pick" : "auto");
+  const manual = mode !== "auto";
+  const removed = new Set(s.removed || []);
   const row = (x) => {
     const pinned = s.pinned.includes(x.id), excluded = s.excluded.includes(x.id);
     return `<tr><td><span translate="no">${esc(x.id)}</span>${x.uses_perps ? ` <span class="chip">perps</span>` : ""}</td>
@@ -590,7 +612,8 @@ function agentView() {
     state.chain = {};
     scriptsOnChain(known).then((c) => { state.chain = c; if (location.hash.includes("agent")) agentView(); });
   }
-  const running = (x) => (manual ? s.pinned.includes(x.id) : x.allocation > 0 && !s.excluded.includes(x.id) && (s.allowPerps || !x.uses_perps));
+  const running = (x) => !removed.has(x.id) && (mode === "manual" ? (s.weights[x.id] || 0) > 0
+    : mode === "pick" ? s.pinned.includes(x.id) : x.allocation > 0 && !s.excluded.includes(x.id) && (s.allowPerps || !x.uses_perps));
   const per = (x, k) => (x.periods?.[k] == null ? "—" : `<span class="${x.periods[k] >= 0 ? "pos" : "neg"}">${signed(x.periods[k])}</span>`);
   const hchip = (st) => ({ ok: `<span class="chip green"><span class="d"></span>checked today</span>`, warn: `<span class="chip amber"><span class="d"></span>warning</span>`, stop: `<span class="chip red"><span class="d"></span>paused</span>` })[st] || "";
   const card = (x) => {
@@ -607,16 +630,25 @@ function agentView() {
         <td class="${(x.pilot_pnl_usd || 0) >= 0 ? "pos" : "neg"}">${x.pilot_pnl_usd == null ? "—" : (x.pilot_pnl_usd >= 0 ? "+" : "−") + usd(Math.abs(x.pilot_pnl_usd))}</td></tr></tbody></table></div>
       <p class="muted small" style="margin:0">Returns: backtest, worst drop ${pct(x.record_max_drawdown, 0)}. PnL: what this script made for the demo portfolio (paper). Realized PnL appears once it trades live.</p>
       <div class="row">
-        <label class="row small"><input type="checkbox" data-pin="${esc(x.id)}" ${pinned ? "checked" : ""}> run</label>
-        <label class="row small"><input type="checkbox" data-ex="${esc(x.id)}" ${excluded ? "checked" : ""} ${manual ? "disabled" : ""}> never</label>
+        ${mode === "pick" ? `<label class="row small"><input type="checkbox" data-pin="${esc(x.id)}" ${pinned ? "checked" : ""}> run</label>` : ""}
+        ${mode === "auto" ? `<label class="row small"><input type="checkbox" data-ex="${esc(x.id)}" ${excluded ? "checked" : ""}> never use</label>` : ""}
+        ${mode === "manual" ? `<label class="row small">Share <input type="number" min="0" max="100" step="1" data-w="${esc(x.id)}" value="${Math.round((s.weights[x.id] || 0) * 100)}" style="width:64px">%</label>` : ""}
         <span style="flex:1"></span>
+        ${state.confirmRemove === x.id
+          ? `<button class="btn sm danger" data-rm="${esc(x.id)}" type="button">Confirm remove</button><button class="btn sm ghost" data-rmno type="button">Keep</button>`
+          : `<button class="btn sm ghost" data-rmask="${esc(x.id)}" type="button">Remove</button>`}
         <button class="btn sm ghost" data-copy="${esc(x.id)}" type="button">Copy · 5% of profit</button>
         <button class="btn sm" data-buy="${esc(x.id)}" type="button">${price ? "Buy for " + (Number(BigInt(price) / 10n ** 21n) / 1000).toLocaleString("en-US") + " NEAR" : "Make an offer"}</button>
       </div>
+      ${state.advanced ? `<div class="row small" style="gap:16px;border-top:1px solid var(--line);padding-top:8px">
+        <label class="row">Max share <input type="number" min="1" max="100" step="1" data-cap="${esc(x.id)}" value="${s.caps[x.id] != null ? Math.round(s.caps[x.id] * 100) : ""}" placeholder="${Math.round(s.maxWeight * 100)}" style="width:64px">%</label>
+        <label class="row">Pause if its drawdown exceeds <input type="number" min="1" max="90" step="1" data-stop="${esc(x.id)}" value="${s.stops[x.id] != null ? Math.round(s.stops[x.id] * 100) : ""}" placeholder="off" style="width:64px">%</label></div>` : ""}
       ${state.nftAction?.id === x.id ? `<pre class="code" translate="no">${esc(state.nftAction.text)}</pre>` : ""}
     </article>`;
   };
-  const shown = state.showAllScripts ? list : list.filter(running);
+  const mine = list.filter((x) => !removed.has(x.id));
+  const shown = state.showAllScripts ? mine : mine.filter(running);
+  const manualTotal = Object.entries(s.weights).filter(([k]) => !removed.has(k)).reduce((a, [, v]) => a + v, 0);
   $("#view").innerHTML = `
     <div class="head"><div><h1>Agent</h1>
       <p class="lede">Your agent runs your portfolio with scripts. Talk to it, give it tasks, or pick the scripts yourself. It checks every running script once a day. It can never send funds out: every action goes through the rules you signed.</p></div>
@@ -630,33 +662,48 @@ function agentView() {
         <p class="muted small" style="margin:0">Once a day the agent checks each running script for crashes, invalid weights, stale prices, unusual turnover, live results drifting from the simulation, slippage and refused orders. A script with a serious problem is paused until you look. Logic is reviewed once per version: the code cannot change after minting.</p>
         <div class="row">${["ok", "warn", "stop"].map((k) => `<span class="chip ${k === "ok" ? "green" : k === "warn" ? "amber" : "red"}">${Object.values(health).filter((h) => h.status === k).length} ${k === "ok" ? "healthy" : k === "warn" ? "warnings" : "paused"}</span>`).join("")}</div></div>
     </div>
-    <div class="card-h" style="margin:24px 0 12px"><h2>${state.showAllScripts ? "All scripts" : "Running scripts"} · ${shown.length} of ${list.length}</h2>
-      <div class="row"><span class="muted small">${manual ? "You pick: only “run” scripts, equal shares." : "The agent picks as a risk manager."}</span>
-      <button class="btn sm ghost" id="allscripts" type="button">${state.showAllScripts ? "Show running only" : "Add scripts"}</button></div></div>
-    <div class="grid g2">${shown.map(card).join("") || `<p class="muted small">No script is running. The crypto part waits in USDC.</p>`}</div>
-    <div class="grid g2" style="margin-top:16px">
-      <div class="card stack">
-        <h2>Tune the agent</h2>
-        <form class="stack" id="tune"><label class="sr" for="tune-in">Instruction</label>
-          <textarea id="tune-in" rows="2" placeholder="e.g. no perps. skip scripts with drawdown over 20%. max 40% per script" spellcheck="false"></textarea>
-          <div class="row"><button class="btn sm" type="submit">Preview the change</button></div></form>
-        ${draft ? `<div class="card" style="box-shadow:none">
-          ${draft.changes.length ? `<ul class="small" style="margin:0 0 8px;padding-left:18px">${draft.changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
-          ${draft.warnings.map((w) => `<p class="muted small" style="margin:0 0 8px">${esc(w)}</p>`).join("")}
-          ${draft.changes.length ? `<div class="row"><button class="btn sm green" id="apply">Apply</button><button class="btn sm ghost" id="discard">Discard</button></div>` : ""}</div>` : ""}
-        <label class="row small"><input type="checkbox" id="perps" ${s.allowPerps ? "checked" : ""}> Allow scripts that trade perps (Hyperliquid, ≤1x)</label>
+    <div class="card stack" style="margin-top:16px">
+      <div class="card-h" style="margin:0"><h2>How scripts are managed</h2>
+        <div class="row" role="group" aria-label="Mode">
+          ${[["auto", "Agent decides"], ["pick", "I pick, agent sizes"], ["manual", "Manual shares"]].map(([k, l]) => `<button type="button" class="chip toggle" data-select="${k}" aria-pressed="${mode === k}">${l}</button>`).join("")}</div></div>
+      <p class="muted small" style="margin:0">${{
+        auto: "The agent picks scripts and sizes them as a risk manager. You set the limits below.",
+        pick: "Tick “run” on the scripts you allow. The agent decides how much each gets.",
+        manual: `You set every share. The agent only watches for errors and the drawdown stop. Total: <b class="${manualTotal > 1.0001 ? "neg" : ""}">${pct(manualTotal, 0)}</b> of the crypto part${manualTotal < 0.9999 ? `, the rest stays in USDC` : ""}${manualTotal > 1.0001 ? " — over 100%, lower some shares" : ""}.`,
+      }[mode]}</p>
+      <div class="row" style="gap:16px">
+        <label class="row small">Review <select id="review">${agent.REVIEWS.map(([d, l]) => `<option value="${d}" ${s.reviewEvery === d ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <label class="row small"><input type="checkbox" id="perps" ${s.allowPerps ? "checked" : ""}> Allow perps (Hyperliquid, ≤1x)</label>
+        <button class="btn sm ghost" id="advanced" type="button" aria-pressed="${!!state.advanced}">${state.advanced ? "Hide advanced settings" : "Advanced settings"}</button>
       </div>
-      <div class="card stack">
-        <h2>By hand</h2>
-        <label class="small">At most per script: <b id="mw-v">${pct(s.maxWeight, 0)}</b>
-          <input type="range" id="mw" min="0.1" max="1" step="0.05" value="${s.maxWeight}" ${manual ? "disabled" : ""} style="width:100%"></label>
-        <label class="small">Skip scripts with 8-week drawdown above: <b id="dd-v">${s.maxRecordDrawdown == null ? "off" : pct(s.maxRecordDrawdown, 0)}</b>
-          <input type="range" id="dd" min="0.05" max="0.5" step="0.05" value="${s.maxRecordDrawdown ?? 0.5}" ${manual ? "disabled" : ""} style="width:100%"></label>
-        <label class="small">Judge scripts on the last <b id="ww-v">${s.windowWeeks}</b> weeks
-          <input type="range" id="ww" min="4" max="26" step="1" value="${s.windowWeeks}" ${manual ? "disabled" : ""} style="width:100%"></label>
-        <button class="btn sm ghost" id="reset" type="button">Reset to defaults</button>
-      </div>
+      ${state.advanced ? `<div class="grid g2">
+        <div class="stack">
+          <label class="small">How the agent sizes scripts
+            <select id="alloc" ${mode === "manual" ? "disabled" : ""}>${agent.ALLOCATIONS.map(([k, l]) => `<option value="${k}" ${s.allocation === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+          <p class="muted small" style="margin:0">${esc(agent.ALLOCATIONS.find((a) => a[0] === s.allocation)?.[2] || "")}</p>
+          <label class="small">At most per script: <b id="mw-v">${pct(s.maxWeight, 0)}</b>
+            <input type="range" id="mw" min="0.1" max="1" step="0.05" value="${s.maxWeight}" ${mode !== "auto" ? "disabled" : ""} style="width:100%"></label>
+        </div>
+        <div class="stack">
+          <label class="small">Skip scripts with 8-week drawdown above: <b id="dd-v">${s.maxRecordDrawdown == null ? "off" : pct(s.maxRecordDrawdown, 0)}</b>
+            <input type="range" id="dd" min="0.05" max="0.5" step="0.05" value="${s.maxRecordDrawdown ?? 0.5}" ${mode !== "auto" ? "disabled" : ""} style="width:100%"></label>
+          <label class="small">Judge scripts on the last <b id="ww-v">${s.windowWeeks}</b> weeks
+            <input type="range" id="ww" min="4" max="26" step="1" value="${s.windowWeeks}" ${mode !== "auto" ? "disabled" : ""} style="width:100%"></label>
+          <p class="muted small" style="margin:0">Per-script limits (max share, own stop) are on each card below.</p>
+        </div></div>` : ""}
+      <form class="row" id="tune" style="flex-wrap:nowrap"><label class="sr" for="tune-in">Settings in words</label>
+        <input type="text" id="tune-in" placeholder="Or in words: no perps · max 40% per script · skip scripts with drawdown over 20%" autocomplete="off">
+        <button class="btn sm" type="submit">Preview</button></form>
+      ${draft ? `<div class="card" style="box-shadow:none">
+        ${draft.changes.length ? `<ul class="small" style="margin:0 0 8px;padding-left:18px">${draft.changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
+        ${draft.warnings.map((w) => `<p class="muted small" style="margin:0 0 8px">${esc(w)}</p>`).join("")}
+        ${draft.changes.length ? `<div class="row"><button class="btn sm green" id="apply">Apply</button><button class="btn sm ghost" id="discard">Discard</button></div>` : ""}</div>` : ""}
+      <button class="btn sm ghost" id="reset" type="button" style="align-self:flex-start">Reset all settings</button>
     </div>
+    <div class="card-h" style="margin:24px 0 12px"><h2>${state.showAllScripts ? "My scripts" : "Running scripts"} · ${shown.length} of ${mine.length}</h2>
+      <div class="row">${removed.size ? `<button class="btn sm ghost" id="restore" type="button">Restore ${removed.size} removed</button>` : ""}
+      <button class="btn sm ghost" id="allscripts" type="button">${state.showAllScripts ? "Show running only" : "Show all my scripts"}</button></div></div>
+    <div class="grid g2">${shown.map(card).join("") || `<p class="muted small">No script is running. The crypto part waits in USDC.</p>`}</div>
     <div class="card" style="margin-top:16px">
       <div class="card-h"><h2>On the last 2 years</h2>
         <span class="chip ${v.exact ? "green" : "amber"}"><span class="d"></span>${v.exact ? "simulated with these exact settings" : "closest simulated setup; exact run needs the Pilot backend"}</span></div>
@@ -689,6 +736,30 @@ function agentView() {
     set({ excluded: b.checked ? [...s.excluded, id] : s.excluded.filter((x) => x !== id) });
   }));
   $("#perps").onchange = (e) => set({ allowPerps: e.target.checked });
+  document.querySelectorAll("[data-select]").forEach((b) => (b.onclick = () => set({ select: b.dataset.select })));
+  $("#review").onchange = (e) => set({ reviewEvery: +e.target.value });
+  $("#advanced").onclick = () => { state.advanced = !state.advanced; agentView(); };
+  if ($("#alloc")) $("#alloc").onchange = (e) => set({ allocation: e.target.value });
+  document.querySelectorAll("[data-w]").forEach((b) => (b.onchange = () => {
+    const v = Math.max(0, Math.min(100, +b.value || 0)) / 100;
+    set({ weights: { ...s.weights, [b.dataset.w]: v } });
+  }));
+  const perScript = (attr, key) => document.querySelectorAll(`[data-${attr}]`).forEach((b) => (b.onchange = () => {
+    const m = { ...s[key] };
+    if (b.value === "") delete m[b.dataset[attr]]; else m[b.dataset[attr]] = Math.max(0.01, Math.min(1, +b.value / 100));
+    set({ [key]: m });
+  }));
+  perScript("cap", "caps");
+  perScript("stop", "stops");
+  document.querySelectorAll("[data-rmask]").forEach((b) => (b.onclick = () => { state.confirmRemove = b.dataset.rmask; agentView(); }));
+  document.querySelectorAll("[data-rmno]").forEach((b) => (b.onclick = () => { state.confirmRemove = null; agentView(); }));
+  document.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = () => {
+    const id = b.dataset.rm;
+    state.confirmRemove = null;
+    set({ removed: [...new Set([...(s.removed || []), id])], pinned: s.pinned.filter((x) => x !== id) });
+    toast(`${id} removed from your agent`);
+  }));
+  if ($("#restore")) $("#restore").onclick = () => set({ removed: [] });
   bindCommandBox("agent-cmd", false, agentView);
   document.querySelectorAll("[data-deltask]").forEach((b) => (b.onclick = () => {
     cmd.saveTasks(cmd.loadTasks().filter((t) => String(t.id) !== b.dataset.deltask));
@@ -707,6 +778,7 @@ function agentView() {
   }));
   const slider = (id, key, fmtv, conv = Number) => {
     const el = $("#" + id);
+    if (!el) return; // advanced settings are collapsed
     el.oninput = () => ($(`#${id}-v`).textContent = fmtv(conv(el.value)));
     el.onchange = () => set({ [key]: conv(el.value) });
   };

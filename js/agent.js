@@ -2,7 +2,22 @@
 // Mirrors pilot/tuning.py (words -> settings) and pilot/scriptgen.py (static script checks).
 // The agent never trades; these settings only change which scripts get capital and how much.
 
-export const DEFAULTS = { pinned: [], excluded: [], allowPerps: true, maxWeight: 0.6, maxRecordDrawdown: null, windowWeeks: 8 };
+// select: "auto" (agent picks and sizes) | "pick" (owner picks, agent sizes) | "manual" (owner sets shares)
+// allocation: "calm" | "equal" | "return" | "balanced"; reviewEvery: days between automatic reviews (>= 1)
+// caps / stops: per-script max share and per-script drawdown stop; removed: scripts taken off this agent
+export const DEFAULTS = {
+  select: "auto", pinned: [], excluded: [], weights: {}, allowPerps: true, maxWeight: 0.6, maxRecordDrawdown: null,
+  windowWeeks: 8, allocation: "calm", reviewEvery: 7, caps: {}, stops: {}, removed: [],
+};
+
+export const ALLOCATIONS = [
+  ["calm", "Calm first", "Calmer scripts get more (inverse volatility). Best in our 2-year simulation."],
+  ["equal", "Equal", "The same share for every running script."],
+  ["return", "Return per risk", "More to scripts with higher past return per unit of volatility. Tends to chase recent winners."],
+  ["balanced", "Balanced", "Return per risk, minus scripts that move together. Weakest in our simulation; offered for comparison."],
+];
+
+export const REVIEWS = [[1, "Every day"], [7, "Every week"], [14, "Every 2 weeks"], [30, "Every month"]];
 
 const PCT = /(\d{1,3}(?:[.,]\d+)?)\s*%/;
 
@@ -48,10 +63,14 @@ export function tune(text, known, base = DEFAULTS) {
 
 // Which precomputed simulation matches these settings, and whether the match is exact.
 export function variantFor(s, variants) {
-  if (s.pinned.length === 1 && variants[`pin:${s.pinned[0]}`]) return { key: `pin:${s.pinned[0]}`, exact: true };
-  const plain = !s.pinned.length && !s.excluded.length && s.maxWeight === 0.6 && s.maxRecordDrawdown == null && s.windowWeeks === 8;
-  if (plain && !s.allowPerps) return { key: "no-perps", exact: true };
-  if (plain) return { key: "risk", exact: true };
+  if (s.select !== "manual" && s.pinned.length === 1 && variants[`pin:${s.pinned[0]}`]) return { key: `pin:${s.pinned[0]}`, exact: true };
+  const base = s.select === "auto" && !s.pinned.length && !s.excluded.length && !s.removed?.length && s.maxWeight === 0.6
+    && s.maxRecordDrawdown == null && s.windowWeeks === 8 && !Object.keys(s.caps || {}).length && !Object.keys(s.stops || {}).length;
+  const def = s.allocation === "calm" && s.reviewEvery === 7;
+  if (base && def && !s.allowPerps) return { key: "no-perps", exact: true };
+  if (base && s.allowPerps && s.allocation !== "calm" && s.reviewEvery === 7 && variants[`alloc:${s.allocation}`]) return { key: `alloc:${s.allocation}`, exact: true };
+  if (base && s.allowPerps && s.allocation === "calm" && variants[`review:${s.reviewEvery}`]) return { key: `review:${s.reviewEvery}`, exact: true };
+  if (base && def) return { key: "risk", exact: true };
   return { key: s.allowPerps ? "risk" : "no-perps", exact: false };
 }
 
