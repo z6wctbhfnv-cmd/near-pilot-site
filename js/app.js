@@ -153,7 +153,7 @@ function portfolio() {
         <h1>Portfolio</h1>
         <p class="lede">How Pilot would have run $${fmt(m.start_equity)} from ${esc(DATE.format(new Date(report.period[0] + "Z")))} to ${esc(DATE.format(new Date(report.period[1] + "Z")))}.</p>
       </div>
-      <div class="row"><span class="chip amber"><span class="d"></span>Simulation · hypothetical</span>
+      <div class="row">
       ${live() && allowed() ? `<span class="chip green"><span class="d"></span>Live</span>` : ""}</div>
     </div>
     <div style="margin-bottom:16px">${commandBox("trade-cmd", { tradeOnly: true, placeholder: "e.g. buy BTC for $100 · продай ETH на $50" })}</div>
@@ -687,7 +687,8 @@ function scriptPanel(x, s, chain) {
   </div>`;
 }
 
-function agentView() {
+function agentView(page = state.agentPage || "agent") {
+  state.agentPage = page;
   const list = state.data.report.strategies;
   const known = list.map((x) => x.id);
   const s = (state.agent ||= agent.load());
@@ -710,7 +711,7 @@ function agentView() {
   const chain = state.chain || {};
   if (CONFIG.nft?.contract && !state.chain) {
     state.chain = {};
-    scriptsOnChain(known).then((c) => { state.chain = c; if (location.hash.includes("agent")) agentView(); });
+    scriptsOnChain(known).then((c) => { state.chain = c; if (/#\/(agent|settings)/.test(location.hash)) agentView(); });
   }
   const running = (x) => !removed.has(x.id) && !(s.paused || []).includes(x.id) && (mode === "manual" ? (s.weights[x.id] || 0) > 0
     : mode === "pick" ? s.pinned.includes(x.id) : x.allocation > 0 && !s.excluded.includes(x.id) && (s.allowPerps || !x.uses_perps));
@@ -772,9 +773,12 @@ function agentView() {
   const shown = state.showAllScripts ? mine : mine.filter(running);
   const manualTotal = Object.entries(s.weights).filter(([k]) => !removed.has(k)).reduce((a, [, v]) => a + v, 0);
   $("#view").innerHTML = `
-    <div class="head"><div><h1>Agent</h1>
-      <p class="lede">Your agent runs your portfolio with scripts. Talk to it, give it tasks, or pick the scripts yourself. It checks every running script once a day. It can never send funds out: every action goes through the rules you signed.</p></div>
-      <span class="chip amber"><span class="d"></span>Private: settings and tasks stay in this browser</span></div>
+    <div class="head"><div><h1>${page === "settings" ? "Settings" : "Agent"}</h1>
+      <p class="lede">${page === "settings"
+        ? "How your agent picks and sizes scripts, what it does on its own, and which AI it uses. Each script's own settings are under “Settings” on its card on the Agent page."
+        : "Your agent runs your portfolio with scripts. Talk to it, give it tasks, or pick the scripts yourself. It checks every running script once a day. It can never send funds out: every action goes through the rules you signed."}</p></div>
+      ${page === "settings" ? `<a class="btn sm ghost" href="#/agent">Back to the agent</a>` : `<a class="btn sm" href="#/settings">Settings</a>`}</div>
+    <div ${page === "settings" ? "hidden" : ""}>
     ${commandBox("agent-cmd", { placeholder: "e.g. if BTC below 60000 buy $500 · buy $50 of ETH every friday · no perps" })}
     <div class="grid g2" style="margin-top:16px">
       <div class="card stack"><h2>Tasks</h2>
@@ -790,8 +794,10 @@ function agentView() {
           ${s.onScriptChange !== "unfollow" ? `<div class="row"><button class="btn sm green" data-ackv="${esc(x.id)}" type="button">Keep copying v${chain[x.id].version}</button><button class="btn sm ghost" data-unf="${esc(x.id)}" type="button">Stop copying</button></div>` : ""}</div>`).join("")}
         ${(s.pausedByAgent || []).filter((id) => (s.paused || []).includes(id) && !changes.some((x) => x.id === id)).map((id) => `<div class="card" style="box-shadow:none"><p class="small" style="margin:0 0 8px">The agent paused <b>${esc(title(id))}</b>: ${esc(health[id]?.findings?.map((f) => f.detail).join("; ") || "a serious problem")}.</p>
           <div class="row"><button class="btn sm" data-unpause="${esc(id)}" type="button">Resume</button></div></div>`).join("")}
-        <p class="muted small" style="margin:0">${{ pause: "On a serious problem the agent pauses the script and tells you.", ask: "On a serious problem the agent asks you; the script keeps running meanwhile.", notify: "On a serious problem the agent only tells you." }[s.onProblem]} Change this under “How scripts are managed”.</p></div>
+        <p class="muted small" style="margin:0">${{ pause: "On a serious problem the agent pauses the script and tells you.", ask: "On a serious problem the agent asks you; the script keeps running meanwhile.", notify: "On a serious problem the agent only tells you." }[s.onProblem]} Change this in <a href="#/settings">Settings</a>.</p></div>
     </div>
+    </div>
+    <div ${page === "settings" ? "" : "hidden"}>
     <div class="card stack" style="margin-top:16px">
       <div class="card-h" style="margin:0"><h2>AI for your agent</h2>
         <span class="chip ${ai.key ? "green" : ""}"><span class="d"></span>${ai.key ? "your NEAR AI key is connected" : "built-in parser"}</span></div>
@@ -835,7 +841,7 @@ function agentView() {
             <input type="range" id="dd" min="0.05" max="0.5" step="0.05" value="${s.maxRecordDrawdown ?? 0.5}" ${mode !== "auto" ? "disabled" : ""} style="width:100%"></label>
           <label class="small">Judge scripts on the last <b id="ww-v">${s.windowWeeks}</b> weeks
             <input type="range" id="ww" min="4" max="26" step="1" value="${s.windowWeeks}" ${mode !== "auto" ? "disabled" : ""} style="width:100%"></label>
-          <p class="muted small" style="margin:0">Per-script limits (max share, own stop) are on each card below.</p>
+          <p class="muted small" style="margin:0">Per-script limits (max share, own stop, execution, schedule) are under “Settings” on each script's card on the <a href="#/agent">Agent</a> page.</p>
         </div></div>` : ""}
       <form class="row" id="tune" style="flex-wrap:nowrap"><label class="sr" for="tune-in">Settings in words</label>
         <input type="text" id="tune-in" placeholder="Or in words: no perps · max 40% per script · skip scripts with drawdown over 20%" autocomplete="off">
@@ -846,11 +852,14 @@ function agentView() {
         ${draft.changes.length ? `<div class="row"><button class="btn sm green" id="apply">Apply</button><button class="btn sm ghost" id="discard">Discard</button></div>` : ""}</div>` : ""}
       <button class="btn sm ghost" id="reset" type="button" style="align-self:flex-start">Reset all settings</button>
     </div>
+    </div>
+    <div ${page === "settings" ? "hidden" : ""}>
     <div class="card-h" style="margin:24px 0 12px"><h2>${state.showAllScripts ? "My scripts" : "Running scripts"} · ${shown.length} of ${mine.length}</h2>
       <div class="row">${removed.size ? `<button class="btn sm ghost" id="restore" type="button">Restore ${removed.size} removed</button>` : ""}
       <button class="btn sm ghost" id="allscripts" type="button">${state.showAllScripts ? "Show running only" : "Show all my scripts"}</button></div></div>
     <div class="grid g2">${shown.map(card).join("") || `<p class="muted small">No script is running. The crypto part waits in USDC.</p>`}</div>
-    <div class="card" style="margin-top:16px">
+    </div>
+    <div class="card" style="margin-top:16px" ${page === "settings" ? "" : "hidden"}>
       <div class="card-h"><h2>On the last 2 years</h2>
         <span class="chip ${v.exact ? "green" : "amber"}"><span class="d"></span>${v.exact ? "simulated with these exact settings" : "closest simulated setup; exact run needs the Pilot backend"}</span></div>
       ${sim ? `<div class="grid g3">
@@ -860,7 +869,7 @@ function agentView() {
         <div style="color:var(--green-ink);margin-top:12px">${sparkline(sim.equity, { width: 900, height: 70, color: "currentColor" })}</div>` : `<p class="muted small">No precomputed variants. Run <code>python3 sim/export_variants.py</code>.</p>`}
       <p class="muted small" style="margin:10px 0 0">Hypothetical simulation on Nov 2024 – Nov 2026 data, not a forecast.</p>
     </div>
-    <div class="card stack" style="margin-top:16px">
+    <div class="card stack" style="margin-top:16px" ${page === "settings" ? "hidden" : ""}>
       <h2>Your own script</h2>
       <p class="muted small" style="margin:0">Describe an idea; NEAR AI drafts a script. Or write it yourself. Every script is checked and backtested on past years, then you can mint it as an NFT right away (free, storage only). The code stays private: the NFT holds only its hash. Followers pay you 5% of their new profit.</p>
       <label class="sr" for="idea">Idea</label>
@@ -1048,7 +1057,7 @@ function askView(q = "") {
 
 // ---------------------------------------------------------------------------------------------
 const ROUTES = {
-  portfolio, rules, strategies, agent: agentView, safety,
+  portfolio, rules, strategies, agent: () => agentView("agent"), settings: () => agentView("settings"), safety,
   ask: () => askView(new URLSearchParams(location.hash.split("?")[1] || "").get("q") || ""),
 };
 

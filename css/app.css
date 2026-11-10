@@ -314,3 +314,4 @@ textarea.code { font-family: var(--mono); font-size: 12.5px; line-height: 1.55; 
 input[type="range"] { accent-color: var(--ink); margin-top: 6px; }
 input[type="range"]:disabled { opacity: 0.4; }
 .card svg { max-width: 100%; height: auto; }
+[hidden] { display: none !important; }
