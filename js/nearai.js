@@ -5,13 +5,21 @@
 const BASE = "https://cloud-api.near.ai/v1";
 const KEY = "pilot.nearai";
 
+// Private: hosted by NEAR AI itself inside a TEE; nobody, NEAR AI included, can read the prompts.
+// Not private: NEAR AI forwards the request to the model's maker (Anthropic, OpenAI, Google).
+// Prices: USD per million tokens, input / output (cloud-api.near.ai/v1/models, Nov 2026).
 export const MODELS = [
-  ["anthropic/claude-haiku-5-5", "Claude Haiku 5.5 · $0.10 / $0.50 per M tokens"],
-  ["z-ai/glm-5.3-flash", "GLM 5.3 Flash · $0.08 / $0.50"],
-  ["google/gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite · $0.10 / $0.40"],
-  ["deepseek/deepseek-v4.1-flash", "DeepSeek V4.1 Flash · $0.30 / $1.20"],
-  ["anthropic/claude-sonnet-5-5", "Claude Sonnet 5.5 · $2 / $10 (smarter, pricier)"],
+  ["z-ai/glm-5.3-flash", "GLM 5.3 Flash · $0.08 / $0.50", true],
+  ["Qwen/Qwen3.8-27B", "Qwen 3.8 27B · $0.04 / $1.35", true],
+  ["Qwen/Qwen3.6-35B-A3B-FP8", "Qwen 3.6 35B · $0.17 / $1.10 · strict JSON", true],
+  ["deepseek-ai/DeepSeek-V4.1-Flash-1017", "DeepSeek V4.1 Flash · $0.30 / $1.20 · stronger reasoning", true],
+  ["anthropic/claude-haiku-5-5", "Claude Haiku 5.5 · $0.10 / $0.50", false],
+  ["google/gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite · $0.10 / $0.40", false],
+  ["openai/gpt-5-mini", "GPT-5 mini · $0.25 / $2.00", false],
+  ["anthropic/claude-sonnet-5-5", "Claude Sonnet 5.5 · $2 / $10", false],
 ];
+
+export const isPrivate = (model) => !!MODELS.find((m) => m[0] === model)?.[2];
 
 export function settings() {
   try {

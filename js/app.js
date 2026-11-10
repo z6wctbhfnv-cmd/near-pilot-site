@@ -664,14 +664,28 @@ function agentView() {
   const changed = (id) => chain[id]?.version > 1
     ? `<span class="chip amber" title="The holder changed the code; the record restarted">v${chain[id].version} · changed ${esc(DATE.format(new Date(chain[id].changedAt)))}</span>` : "";
   const ai = nearai.settings();
+  // Serious findings: auto-pause (and say so), or ask, or only warn - as the owner chose.
+  const serious = Object.entries(health).filter(([id, h]) => h.status === "stop" && !removed.has(id) && !(s.keepRunning || []).includes(id));
+  if (s.onProblem === "pause") {
+    const add = serious.map(([id]) => id).filter((id) => !(s.paused || []).includes(id));
+    if (add.length) { s.paused = [...(s.paused || []), ...add]; s.pausedByAgent = [...new Set([...(s.pausedByAgent || []), ...add])]; agent.save(s); }
+  }
   const problems = Object.entries(health).filter(([id, h]) => h.status !== "ok" && !removed.has(id) && !(s.paused || []).includes(id) && !(s.keepRunning || []).includes(id));
+  // Copied scripts that changed since the owner last confirmed them.
+  const changes = list.filter((x) => !removed.has(x.id) && chain[x.id]?.version > 1 && chain[x.id].holder !== state.owner?.account_id
+    && (s.ackVersions || {})[x.id] !== chain[x.id].version);
+  if (changes.length && s.onScriptChange !== "continue") {
+    const ids = changes.map((x) => x.id);
+    if (s.onScriptChange === "unfollow") { s.removed = [...new Set([...(s.removed || []), ...ids])]; ids.forEach((id) => ((s.ackVersions ||= {})[id] = chain[id].version)); agent.save(s); }
+    else { const add = ids.filter((id) => !(s.paused || []).includes(id)); if (add.length) { s.paused = [...(s.paused || []), ...add]; s.pausedByAgent = [...new Set([...(s.pausedByAgent || []), ...add])]; agent.save(s); } }
+  }
   const card = (x) => {
     const pinned = s.pinned.includes(x.id), excluded = s.excluded.includes(x.id);
     const h = health[x.id];
     const price = chain[x.id]?.price;
     return `<article class="card strat">
       <div class="top"><div><h3>${esc(title(x.id))}</h3><div class="id" translate="no">${esc(x.id)}${x.uses_perps ? ` <span class="chip">perps</span>` : ""}</div></div>
-        <div class="row">${changed(x.id)}${(s.paused || []).includes(x.id) ? `<span class="chip red">paused by you</span>` : ""}${hchip(h?.status)}${running(x) ? `<span class="chip green">${manual ? "running" : pct(x.allocation, 0) + " of crypto"}</span>` : `<span class="chip">idle</span>`}</div></div>
+        <div class="row">${changed(x.id)}${(s.paused || []).includes(x.id) ? `<span class="chip red">${(s.pausedByAgent || []).includes(x.id) ? "paused by the agent" : "paused"}</span>` : ""}${hchip(h?.status)}${running(x) ? `<span class="chip green">${manual ? "running" : pct(x.allocation, 0) + " of crypto"}</span>` : `<span class="chip">idle</span>`}</div></div>
       <p class="muted small" style="margin:0">${esc((x.doc || "").split("\n")[0])}</p>
       ${h?.findings?.length ? `<p class="small" style="margin:0;color:var(--amber)">${esc(h.findings.map((f) => f.detail).join("; "))}</p>` : ""}
       <div style="overflow-x:auto"><table class="tbl"><thead><tr><th>1 week</th><th>1 month</th><th>3 months</th><th>1 year</th><th>2 years</th><th>Pilot PnL</th></tr></thead>
@@ -708,21 +722,29 @@ function agentView() {
         ${tasks.length ? `<ul class="events">${tasks.map((t) => `<li><span class="small">${esc(cmd.describeTask(t))}</span><button class="btn sm ghost" data-deltask="${t.id}" type="button">Remove</button></li>`).join("")}</ul>`
           : `<p class="muted small" style="margin:0">No tasks yet. Conditional (“if ETH above 4000 sell $300”) or recurring (“buy $50 of ETH every friday”).</p>`}</div>
       <div class="card stack"><h2>Daily check</h2>
-        <p class="muted small" style="margin:0">Once a day the agent checks each running script for crashes, invalid weights, stale prices, unusual turnover, live results drifting from the simulation, slippage and refused orders. A script with a serious problem is paused until you look. Logic is reviewed once per version: the code cannot change after minting.</p>
+        <p class="muted small" style="margin:0">Once a day the agent checks each running script for crashes, invalid weights, stale prices, unusual turnover, live results drifting from the simulation, slippage and refused orders. Logic is reviewed once per version: when a holder changes a script, it becomes a new version with a fresh record.</p>
         <div class="row">${["ok", "warn", "stop"].map((k) => `<span class="chip ${k === "ok" ? "green" : k === "warn" ? "amber" : "red"}">${Object.values(health).filter((h) => h.status === k).length} ${k === "ok" ? "healthy" : k === "warn" ? "warnings" : "serious"}</span>`).join("")}</div>
         ${problems.map(([id, h]) => `<div class="card" style="box-shadow:none"><p class="small" style="margin:0 0 8px"><b>${esc(title(id))}</b>: ${esc(h.findings.map((f) => f.detail).join("; "))}. Pause it?</p>
           <div class="row"><button class="btn sm danger" data-pause="${esc(id)}" type="button">Pause</button><button class="btn sm ghost" data-keep="${esc(id)}" type="button">Keep running</button></div></div>`).join("")}
-        <p class="muted small" style="margin:0">The agent never pauses a script on its own: it asks you.</p></div>
+        ${changes.map((x) => `<div class="card" style="box-shadow:none"><p class="small" style="margin:0 0 8px"><b>${esc(title(x.id))}</b> was changed by its holder on ${esc(DATE.format(new Date(chain[x.id].changedAt)))} (v${chain[x.id].version}); its record restarted.
+            ${s.onScriptChange === "pause" ? " Paused until you confirm." : s.onScriptChange === "unfollow" ? " You stopped copying it." : " Still copying."}</p>
+          ${s.onScriptChange !== "unfollow" ? `<div class="row"><button class="btn sm green" data-ackv="${esc(x.id)}" type="button">Keep copying v${chain[x.id].version}</button><button class="btn sm ghost" data-unf="${esc(x.id)}" type="button">Stop copying</button></div>` : ""}</div>`).join("")}
+        ${(s.pausedByAgent || []).filter((id) => (s.paused || []).includes(id) && !changes.some((x) => x.id === id)).map((id) => `<div class="card" style="box-shadow:none"><p class="small" style="margin:0 0 8px">The agent paused <b>${esc(title(id))}</b>: ${esc(health[id]?.findings?.map((f) => f.detail).join("; ") || "a serious problem")}.</p>
+          <div class="row"><button class="btn sm" data-unpause="${esc(id)}" type="button">Resume</button></div></div>`).join("")}
+        <p class="muted small" style="margin:0">${{ pause: "On a serious problem the agent pauses the script and tells you.", ask: "On a serious problem the agent asks you; the script keeps running meanwhile.", notify: "On a serious problem the agent only tells you." }[s.onProblem]} Change this under “How scripts are managed”.</p></div>
     </div>
     <div class="card stack" style="margin-top:16px">
       <div class="card-h" style="margin:0"><h2>AI for your agent</h2>
         <span class="chip ${ai.key ? "green" : ""}"><span class="d"></span>${ai.key ? "your NEAR AI key is connected" : "built-in parser"}</span></div>
-      <p class="muted small" style="margin:0">Connect your own NEAR AI Cloud key: the model runs privately in a TEE and NEAR AI bills your account directly. Pilot takes nothing and never sees the key — it stays in this browser. A message costs a fraction of a cent on the default model.</p>
+      <p class="muted small" style="margin:0">Connect your own NEAR AI Cloud key. NEAR AI bills your account directly: top it up on cloud.near.ai, or pay with NEAR staking rewards (your stake stays yours, the rewards cover the agent). Pilot takes nothing and never sees the key — it stays in this browser. A message costs a fraction of a cent on the default model.</p>
       <div class="row" style="flex-wrap:nowrap"><label class="sr" for="ai-key">NEAR AI key</label>
         <input type="password" id="ai-key" placeholder="${ai.key ? "•••••••• connected" : "NEAR AI API key (cloud.near.ai → API keys)"}" autocomplete="off" spellcheck="false">
         <button class="btn sm" id="ai-save" type="button">${ai.key ? "Replace" : "Connect"}</button>
         ${ai.key ? `<button class="btn sm ghost" id="ai-forget" type="button">Forget</button>` : ""}</div>
-      ${ai.key ? `<div class="row" style="gap:16px"><label class="row small">Model <select id="ai-model">${nearai.MODELS.map(([m, l]) => `<option value="${m}" ${ai.model === m ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
+      ${ai.key ? `<div class="row" style="gap:16px"><label class="row small">Model <select id="ai-model">
+          <optgroup label="Private · hosted by NEAR AI in a TEE">${nearai.MODELS.filter((m) => m[2]).map(([m, l]) => `<option value="${m}" ${ai.model === m ? "selected" : ""}>${esc(l)}</option>`).join("")}</optgroup>
+          <optgroup label="Not private · forwarded to the maker">${nearai.MODELS.filter((m) => !m[2]).map(([m, l]) => `<option value="${m}" ${ai.model === m ? "selected" : ""}>${esc(l)}</option>`).join("")}</optgroup></select></label>
+        ${nearai.isPrivate(ai.model) ? `<span class="chip green">private</span>` : `<span class="chip amber">not private: the maker sees your messages</span>`}
         <label class="row small"><input type="checkbox" id="ai-voice" ${ai.voice ? "checked" : ""}> Private voice (Whisper on NEAR AI instead of the browser's)</label></div>` : ""}
     </div>
     <div class="card stack" style="margin-top:16px">
@@ -737,6 +759,8 @@ function agentView() {
       <div class="row" style="gap:16px">
         <label class="row small">Review <select id="review">${agent.REVIEWS.map(([d, l]) => `<option value="${d}" ${s.reviewEvery === d ? "selected" : ""}>${l}</option>`).join("")}</select></label>
         <label class="row small"><input type="checkbox" id="perps" ${s.allowPerps ? "checked" : ""}> Allow perps (Hyperliquid, ≤1x)</label>
+        <label class="row small">If a script breaks <select id="on-problem">${agent.ON_PROBLEM.map(([k, l]) => `<option value="${k}" ${s.onProblem === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <label class="row small">If a copied script changes <select id="on-change">${agent.ON_CHANGE.map(([k, l]) => `<option value="${k}" ${s.onScriptChange === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
         <button class="btn sm ghost" id="advanced" type="button" aria-pressed="${!!state.advanced}">${state.advanced ? "Hide advanced settings" : "Advanced settings"}</button>
       </div>
       ${state.advanced ? `<div class="grid g2">
@@ -824,6 +848,20 @@ function agentView() {
   }));
   if ($("#restore")) $("#restore").onclick = () => set({ removed: [] });
   document.querySelectorAll("[data-pause]").forEach((b) => (b.onclick = () => set({ paused: [...new Set([...(s.paused || []), b.dataset.pause])] })));
+  $("#on-problem").onchange = (e) => set({ onProblem: e.target.value });
+  $("#on-change").onchange = (e) => set({ onScriptChange: e.target.value });
+  document.querySelectorAll("[data-ackv]").forEach((b) => (b.onclick = () => {
+    const id = b.dataset.ackv;
+    set({ ackVersions: { ...(s.ackVersions || {}), [id]: chain[id].version }, paused: (s.paused || []).filter((x) => x !== id), pausedByAgent: (s.pausedByAgent || []).filter((x) => x !== id) });
+  }));
+  document.querySelectorAll("[data-unf]").forEach((b) => (b.onclick = () => {
+    const id = b.dataset.unf;
+    set({ removed: [...new Set([...(s.removed || []), id])], ackVersions: { ...(s.ackVersions || {}), [id]: chain[id].version } });
+  }));
+  document.querySelectorAll("[data-unpause]").forEach((b) => (b.onclick = () => {
+    const id = b.dataset.unpause;
+    set({ paused: (s.paused || []).filter((x) => x !== id), pausedByAgent: (s.pausedByAgent || []).filter((x) => x !== id), keepRunning: [...new Set([...(s.keepRunning || []), id])] });
+  }));
   document.querySelectorAll("[data-keep]").forEach((b) => (b.onclick = () => set({ keepRunning: [...new Set([...(s.keepRunning || []), b.dataset.keep])] })));
   $("#ai-save").onclick = async () => {
     const k = $("#ai-key").value.trim();

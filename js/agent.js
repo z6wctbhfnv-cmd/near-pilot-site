@@ -8,7 +8,14 @@
 export const DEFAULTS = {
   select: "auto", pinned: [], excluded: [], weights: {}, allowPerps: true, maxWeight: 0.6, maxRecordDrawdown: null,
   windowWeeks: 8, allocation: "calm", reviewEvery: 7, caps: {}, stops: {}, removed: [],
+  // What the agent does on its own (the owner chooses):
+  onProblem: "pause",        // serious daily-check finding: "pause" and tell | "ask" and wait | "notify" only
+  onScriptChange: "pause",   // a copied script got a new version: "pause" until confirmed | "continue" and tell | "unfollow"
+  paused: [], pausedByAgent: [], keepRunning: [], ackVersions: {},
 };
+
+export const ON_PROBLEM = [["pause", "Pause it and tell me"], ["ask", "Ask me, keep running meanwhile"], ["notify", "Only tell me"]];
+export const ON_CHANGE = [["pause", "Pause until I confirm"], ["continue", "Keep copying and tell me"], ["unfollow", "Stop copying"]];
 
 export const ALLOCATIONS = [
   ["calm", "Calm first", "Calmer scripts get more (inverse volatility). Best in our 2-year simulation."],
