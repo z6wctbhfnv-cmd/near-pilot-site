@@ -3,6 +3,7 @@ import { CONFIG } from "./config.js";
 import { lineChart, sparkline } from "./chart.js";
 import { compileRules } from "./rules.js";
 import { ask } from "./ask.js";
+import { scriptsOnChain, explorer } from "./chain.js";
 import { defaultPolicy, interpret, checkAttempt, fmt } from "./policy.js";
 import { currentOwner, createPasskey, connectNearWallet, signWithPasskey, disconnect, shortOwner, passkeySupported } from "./wallet.js";
 
@@ -19,7 +20,7 @@ const SERIES = [
   { key: "crypto_only_buy_and_hold", label: "Crypto only", color: "#c9c9c9", width: 1.4 },
 ];
 const ASSET_COLORS = { USDC: "#3d5af1", XAUT: "#c9a227", BTC: "#f7931a", ETH: "#627eea", SOL: "#8b5cf6", NEAR: "#00c08b" };
-const KIND_CHIP = { review: "blue", breaker: "red", resume: "green", refused: "amber", trade: "" };
+const KIND_CHIP = { review: "blue", breaker: "red", resume: "green", refused: "amber", fee: "green", trade: "" };
 
 const state = {
   data: null,
@@ -159,6 +160,7 @@ function portfolio() {
         <div class="limit" role="img" aria-label="${pct(m.max_drawdown)} of a ${pct(ddLimit, 0)} limit"><i style="width:${Math.min(100, (m.max_drawdown / 0.3) * 100)}%"></i><s style="left:${(ddLimit / 0.3) * 100}%"></s></div>
         <div class="sub">limit ${pct(ddLimit, 0)} · without management ${pct(b.same_weights_buy_and_hold.max_drawdown)}</div></div>
       <div class="card kpi"><div class="label">Costs</div><div class="value">${usd(m.fees_usd)}</div><div class="sub">${fmt(m.trades)} swaps${m.perp_trades ? ` · ${fmt(m.perp_trades)} perp orders` : ""} · ${fmt(m.refused)} refused</div>
+        ${m.author_fees_usd != null ? `<div class="sub">script fees ${usd(m.author_fees_usd)} to authors · ${usd(m.platform_fees_usd)} to Pilot</div>` : ""}
         ${m.perp_trades ? `<div class="sub">perp funding ${m.funding_usd >= 0 ? "earned" : "paid"} ${usd(Math.abs(m.funding_usd))} · max leverage ${m.max_leverage.toFixed(2)}x</div>` : ""}</div>
     </div>
     <div class="card" style="margin-top:16px">
@@ -323,6 +325,20 @@ async function doSign() {
 // ---------------------------------------------------------------------------------------------
 function strategies() {
   const list = state.data.report.strategies;
+  if (CONFIG.nft?.contract && !state.chain) {
+    state.chain = {};
+    scriptsOnChain(list.map((s) => s.id)).then((c) => { state.chain = c; if (location.hash.includes("strategies")) strategies(); });
+  }
+  const chain = state.chain || {};
+  const onchain = (s) => {
+    const c = chain[s.id];
+    if (!CONFIG.nft?.contract) return "";
+    if (!c) return `<div class="muted small">Checking the chain…</div>`;
+    if (c.error) return `<div class="muted small">Chain: ${esc(c.error)}</div>`;
+    const ok = c.info.code_hash === s.code_hash;
+    return `<div class="nft"><a href="${esc(explorer(CONFIG.nft.contract))}" target="_blank" rel="noopener">On-chain · ${c.record.length} checkpoints</a>
+      <span>${ok ? "hash matches ✓" : "hash differs ✗"} · holder <span translate="no">${esc(c.holder)}</span></span></div>`;
+  };
   const chip = { active: "green", incubator: "amber", retired: "" };
   $("#view").innerHTML = `
     <div class="head"><div><h1>Strategies</h1>
@@ -339,7 +355,8 @@ function strategies() {
           <div><small>Worst drop</small><b>${pct(s.record_max_drawdown, 0)}</b></div>
           <div><small>Hired / fired</small><b>${s.hires} / ${s.fires}</b></div>
         </div>
-        <div class="nft"><span translate="no" title="sha256 of the script: ${esc(s.code_hash || "")}">script ${esc((s.code_hash || "").slice(0, 12))}…</span><span>${s.followers ?? 0} following · revenue → holder</span></div>
+        <div class="nft"><span translate="no" title="sha256 of the script: ${esc(s.code_hash || "")}">script ${esc((s.code_hash || "").slice(0, 12))}…</span><span>${chain[s.id]?.followers ?? s.followers ?? 0} following · revenue → holder</span></div>
+        ${onchain(s)}
       </article>`).join("")}
     </div>
     <div class="note" style="margin-top:16px">What the simulation taught us: the weekly review chases strategies that just did well, so it tends to hire at peaks and fire at bottoms. In the product the review works as a risk manager: it fires a strategy for breaking risk rules, not for one bad month. Details are in <code>docs/SIM_FINDINGS.md</code>.</div>`;
