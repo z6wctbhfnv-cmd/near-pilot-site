@@ -6,6 +6,7 @@ import { ask } from "./ask.js";
 import { scriptsOnChain, explorer } from "./chain.js";
 import * as agent from "./agent.js";
 import * as cmd from "./command.js";
+import * as nearai from "./nearai.js";
 import { defaultPolicy, interpret, checkAttempt, fmt } from "./policy.js";
 import { currentOwner, createPasskey, connectNearWallet, signWithPasskey, disconnect, shortOwner, passkeySupported } from "./wallet.js";
 
@@ -333,8 +334,9 @@ async function doSign() {
 // ROI / PnL / max drawdown / copiers), with return-per-drawdown as the default sort.
 const LB_PERIODS = [["7d", 7, "7 days"], ["30d", 30, "30 days"], ["90d", 90, "90 days"], ["180d", 180, "180 days"], ["1y", 365, "1 year"], ["all", 100000, "All time"]];
 
-function lbStats(x, days, capital) {
-  const r = x.daily_returns || [];
+function lbStats(x, days, capital, changedAt = 0) {
+  let r = x.daily_returns || [];
+  if (changedAt) r = r.slice(Math.max(0, Math.ceil((changedAt - (x.daily_start || 0)) / 86400000)));  // record restarts on change
   const w = r.slice(-days);
   let eq = 1, peak = 1, mdd = 0;
   for (const d of w) { eq *= 1 + d; peak = Math.max(peak, eq); mdd = Math.max(mdd, 1 - eq / peak); }
@@ -354,7 +356,7 @@ function strategies() {
   const hiddenCount = list.filter((x) => chain[x.id]?.hidden).length;
   const rows = list
     .filter((x) => !chain[x.id]?.hidden)
-    .map((x) => ({ x, st: lbStats(x, days, lb.capital), copiers: Number(chain[x.id]?.followers ?? 0) }))
+    .map((x) => ({ x, st: lbStats(x, days, lb.capital, chain[x.id]?.version > 1 ? chain[x.id].changedAt : 0), copiers: Number(chain[x.id]?.followers ?? 0) }))
     .filter(({ x, st }) => (lb.maxDd == null || st.mdd <= lb.maxDd) && (lb.perps === "all" || (lb.perps === "spot") === !x.uses_perps) && (!lb.positive || st.roi > 0));
   const sorters = { roi: (r) => r.st.roi, mdd: (r) => -r.st.mdd, ratio: (r) => r.st.ratio, copiers: (r) => r.copiers };
   rows.sort((a, b) => sorters[lb.sort](b) - sorters[lb.sort](a));
@@ -383,11 +385,11 @@ function strategies() {
       <tbody>${rows.map(({ x, st, copiers }, i) => `<tr>
         <td>${i + 1}</td>
         <td><b>${esc(title(x.id))}</b> <span class="muted small" translate="no">${esc(x.id)}</span>${x.uses_perps ? ` <span class="chip">perps</span>` : ""}</td>
-        <td>${ret(st)}</td><td>${pct(st.mdd, 1)}</td><td>${st.ratio.toFixed(2)}</td>
-        <td>${st.days} <span class="muted small">backtest</span></td><td>${copiers}</td>
+        <td>${st.days ? ret(st) : "—"}</td><td>${st.days ? pct(st.mdd, 1) : "—"}</td><td>${st.days ? st.ratio.toFixed(2) : "—"}</td>
+        <td>${st.days} ${chain[x.id]?.version > 1 ? `<span class="chip amber">v${chain[x.id].version} · changed ${esc(DATE.format(new Date(chain[x.id].changedAt)))}</span>` : `<span class="muted small">backtest</span>`}</td><td>${copiers}</td>
         <td>${chain[x.id]?.holder ? `<span translate="no">${esc(chain[x.id].holder)}</span>` : "—"}</td>
         <td>${chain[x.id]?.price ? (Number(BigInt(chain[x.id].price) / 10n ** 21n) / 1000).toLocaleString("en-US") + " NEAR" : "—"}</td>
-        <td>${chain[x.id]?.info ? (chain[x.id].info.code_hash === x.code_hash ? `<span class="chip green">on-chain ✓</span>` : `<span class="chip red">hash differs</span>`) : ""}</td></tr>`).join("")
+        <td>${chain[x.id]?.info ? `<span class="chip green">on-chain ✓</span>` : ""}</td></tr>`).join("")
         || `<tr><td colspan="10" class="muted small">No script matches these filters.</td></tr>`}</tbody></table>
       <p class="muted small" style="margin:10px 0 0">${LB_PERIODS.find((p) => p[0] === lb.period)[2]}. ${lb.unit === "usd" ? `PnL on ${usd(lb.capital)} copied at the start of the period. ` : ""}“Return / drop” divides the return by the worst drop: it rewards steady scripts over lucky ones.${hiddenCount ? ` ${hiddenCount} script${hiddenCount > 1 ? "s are" : " is"} hidden by ${hiddenCount > 1 ? "their holders" : "its holder"}.` : ""} Copy and buy from each script's card on the Agent page.</p>
     </div>
@@ -498,7 +500,7 @@ function commandBox(id, { tradeOnly = false, placeholder }) {
       <button class="btn sm" type="submit">Send</button></form>
     ${cmd.voiceSupported() ? "" : `<p class="muted small" style="margin:0">Voice needs Chrome, Edge or Safari.</p>`}
     <div class="stack">${box.log.map((x, i) => cmdRow(id, x, i)).join("")}</div>
-    <p class="muted small" style="margin:0">${live() ? "" : "Simulation: nothing is sent. "}Every action is checked against the policy you signed; the agent can never send funds out.${tradeOnly ? "" : " With the backend, a NEAR AI model (private, in a TEE) reads your message; here a built-in parser does."}</p>
+    <p class="muted small" style="margin:0">${live() ? "" : "Simulation: nothing is sent. "}Every action is checked against the policy you signed; the agent can never send funds out. ${nearai.settings().key ? `Reading your messages: ${esc(nearai.settings().model)} on NEAR AI, billed to your NEAR AI account.` : "Reading your messages: the built-in parser. Connect your NEAR AI key on the Agent page for a real AI."}</p>
   </div>`;
 }
 
@@ -511,9 +513,35 @@ function cmdRow(id, x, i) {
     ${x.status === "pending" ? `<button class="btn sm green" data-ok="${id}:${i}">Confirm</button><button class="btn sm ghost" data-no="${id}:${i}">Cancel</button>` : ""}</div></div>`;
 }
 
-function runCommand(id, message, tradeOnly) {
+async function runCommand(id, message, tradeOnly, rerender) {
   const box = state.cmd[id];
-  const r = cmd.route(message, { tradeOnly });
+  const ai = nearai.settings();
+  let r;
+  if (ai.key) {
+    box.log = [{ type: "answer", input: message, text: "Thinking… (NEAR AI, your key)", status: "info" }, ...box.log];
+    box.text = "";
+    rerender?.();
+    try {
+      const out = await nearai.interpret(message, { policy: state.policy, settings: state.agent || agent.load(), tasks: cmd.loadTasks().map(cmd.describeTask) });
+      box.log.shift();
+      if (out.type === "task") {
+        try { r = { type: "task", task: cmd.parseTask(out.text || message) }; } catch (e) { r = { type: "answer", text: e.message }; }
+      } else if (out.type === "trade") {
+        r = { type: "trade", side: out.side, asset: out.asset, usd: Number(out.usd) };
+        if (!["buy", "sell"].includes(r.side) || !["BTC", "ETH", "SOL", "NEAR", "XAUT"].includes(r.asset) || !(r.usd > 0)) r = { type: "answer", text: "I could not read that trade safely. Say the asset, buy or sell, and an amount." };
+      } else if (out.type === "tune" && !tradeOnly) {
+        r = { type: "tune", text: out.text || message };
+      } else {
+        r = { type: "answer", text: out.text || "…" };
+      }
+    } catch (e) {
+      box.log.shift();
+      toast(`${e.message}: using the built-in parser`);
+      r = cmd.route(message, { tradeOnly });
+    }
+  } else {
+    r = cmd.route(message, { tradeOnly });
+  }
   const mode = state.cmdMode || "confirm";
   let item;
   if (r.type === "trade") {
@@ -535,6 +563,7 @@ function runCommand(id, message, tradeOnly) {
   if (item.status === "done") applyCommand(item);
   box.log = [item, ...box.log].slice(0, 6);
   box.text = "";
+  rerender?.();
 }
 
 function applyCommand(item) {
@@ -555,10 +584,26 @@ function bindCommandBox(id, tradeOnly, rerender) {
   $(`[data-cmd="${id}"]`).onsubmit = (e) => {
     e.preventDefault();
     const v = $(`#${id}-in`).value.trim();
-    if (v) { runCommand(id, v, tradeOnly); rerender(); }
+    if (v) runCommand(id, v, tradeOnly, rerender);
   };
   const mic = $(`[data-mic="${id}"]`);
-  if (mic) mic.onclick = () => {
+  if (mic) mic.onclick = async () => {
+    const ai = nearai.settings();
+    if (ai.key && ai.voice) {
+      // Private voice: 6 seconds recorded here, transcribed by Whisper on NEAR AI with the owner's key.
+      box.listening = true;
+      rerender();
+      try {
+        const t = await nearai.recordAndTranscribe(6, navigator.language.startsWith("ru") ? "ru" : "en");
+        box.listening = false;
+        if (t.trim()) runCommand(id, t.trim(), tradeOnly, rerender); else rerender();
+      } catch (e) {
+        box.listening = false;
+        toast(e.message);
+        rerender();
+      }
+      return;
+    }
     if (box.stop) { box.stop(); return; }
     box.listening = true;
     rerender();
@@ -569,7 +614,7 @@ function bindCommandBox(id, tradeOnly, rerender) {
         box.text = t;
         const el = $(`#${id}-in`);
         if (el) el.value = t;
-        if (final) { box.stop = null; box.listening = false; runCommand(id, t, tradeOnly); rerender(); }
+        if (final) { box.stop = null; box.listening = false; runCommand(id, t, tradeOnly, rerender); }
       },
       onEnd: () => { box.stop = null; if (box.listening) { box.listening = false; rerender(); } },
       onError: (err) => { box.stop = null; box.listening = false; toast(err === "not-allowed" ? "Microphone access was blocked" : `Voice: ${err}`); rerender(); },
@@ -612,17 +657,21 @@ function agentView() {
     state.chain = {};
     scriptsOnChain(known).then((c) => { state.chain = c; if (location.hash.includes("agent")) agentView(); });
   }
-  const running = (x) => !removed.has(x.id) && (mode === "manual" ? (s.weights[x.id] || 0) > 0
+  const running = (x) => !removed.has(x.id) && !(s.paused || []).includes(x.id) && (mode === "manual" ? (s.weights[x.id] || 0) > 0
     : mode === "pick" ? s.pinned.includes(x.id) : x.allocation > 0 && !s.excluded.includes(x.id) && (s.allowPerps || !x.uses_perps));
   const per = (x, k) => (x.periods?.[k] == null ? "—" : `<span class="${x.periods[k] >= 0 ? "pos" : "neg"}">${signed(x.periods[k])}</span>`);
   const hchip = (st) => ({ ok: `<span class="chip green"><span class="d"></span>checked today</span>`, warn: `<span class="chip amber"><span class="d"></span>warning</span>`, stop: `<span class="chip red"><span class="d"></span>paused</span>` })[st] || "";
+  const changed = (id) => chain[id]?.version > 1
+    ? `<span class="chip amber" title="The holder changed the code; the record restarted">v${chain[id].version} · changed ${esc(DATE.format(new Date(chain[id].changedAt)))}</span>` : "";
+  const ai = nearai.settings();
+  const problems = Object.entries(health).filter(([id, h]) => h.status !== "ok" && !removed.has(id) && !(s.paused || []).includes(id) && !(s.keepRunning || []).includes(id));
   const card = (x) => {
     const pinned = s.pinned.includes(x.id), excluded = s.excluded.includes(x.id);
     const h = health[x.id];
     const price = chain[x.id]?.price;
     return `<article class="card strat">
       <div class="top"><div><h3>${esc(title(x.id))}</h3><div class="id" translate="no">${esc(x.id)}${x.uses_perps ? ` <span class="chip">perps</span>` : ""}</div></div>
-        <div class="row">${hchip(h?.status)}${running(x) ? `<span class="chip green">${manual ? "running" : pct(x.allocation, 0) + " of crypto"}</span>` : `<span class="chip">idle</span>`}</div></div>
+        <div class="row">${changed(x.id)}${(s.paused || []).includes(x.id) ? `<span class="chip red">paused by you</span>` : ""}${hchip(h?.status)}${running(x) ? `<span class="chip green">${manual ? "running" : pct(x.allocation, 0) + " of crypto"}</span>` : `<span class="chip">idle</span>`}</div></div>
       <p class="muted small" style="margin:0">${esc((x.doc || "").split("\n")[0])}</p>
       ${h?.findings?.length ? `<p class="small" style="margin:0;color:var(--amber)">${esc(h.findings.map((f) => f.detail).join("; "))}</p>` : ""}
       <div style="overflow-x:auto"><table class="tbl"><thead><tr><th>1 week</th><th>1 month</th><th>3 months</th><th>1 year</th><th>2 years</th><th>Pilot PnL</th></tr></thead>
@@ -660,7 +709,21 @@ function agentView() {
           : `<p class="muted small" style="margin:0">No tasks yet. Conditional (“if ETH above 4000 sell $300”) or recurring (“buy $50 of ETH every friday”).</p>`}</div>
       <div class="card stack"><h2>Daily check</h2>
         <p class="muted small" style="margin:0">Once a day the agent checks each running script for crashes, invalid weights, stale prices, unusual turnover, live results drifting from the simulation, slippage and refused orders. A script with a serious problem is paused until you look. Logic is reviewed once per version: the code cannot change after minting.</p>
-        <div class="row">${["ok", "warn", "stop"].map((k) => `<span class="chip ${k === "ok" ? "green" : k === "warn" ? "amber" : "red"}">${Object.values(health).filter((h) => h.status === k).length} ${k === "ok" ? "healthy" : k === "warn" ? "warnings" : "paused"}</span>`).join("")}</div></div>
+        <div class="row">${["ok", "warn", "stop"].map((k) => `<span class="chip ${k === "ok" ? "green" : k === "warn" ? "amber" : "red"}">${Object.values(health).filter((h) => h.status === k).length} ${k === "ok" ? "healthy" : k === "warn" ? "warnings" : "serious"}</span>`).join("")}</div>
+        ${problems.map(([id, h]) => `<div class="card" style="box-shadow:none"><p class="small" style="margin:0 0 8px"><b>${esc(title(id))}</b>: ${esc(h.findings.map((f) => f.detail).join("; "))}. Pause it?</p>
+          <div class="row"><button class="btn sm danger" data-pause="${esc(id)}" type="button">Pause</button><button class="btn sm ghost" data-keep="${esc(id)}" type="button">Keep running</button></div></div>`).join("")}
+        <p class="muted small" style="margin:0">The agent never pauses a script on its own: it asks you.</p></div>
+    </div>
+    <div class="card stack" style="margin-top:16px">
+      <div class="card-h" style="margin:0"><h2>AI for your agent</h2>
+        <span class="chip ${ai.key ? "green" : ""}"><span class="d"></span>${ai.key ? "your NEAR AI key is connected" : "built-in parser"}</span></div>
+      <p class="muted small" style="margin:0">Connect your own NEAR AI Cloud key: the model runs privately in a TEE and NEAR AI bills your account directly. Pilot takes nothing and never sees the key — it stays in this browser. A message costs a fraction of a cent on the default model.</p>
+      <div class="row" style="flex-wrap:nowrap"><label class="sr" for="ai-key">NEAR AI key</label>
+        <input type="password" id="ai-key" placeholder="${ai.key ? "•••••••• connected" : "NEAR AI API key (cloud.near.ai → API keys)"}" autocomplete="off" spellcheck="false">
+        <button class="btn sm" id="ai-save" type="button">${ai.key ? "Replace" : "Connect"}</button>
+        ${ai.key ? `<button class="btn sm ghost" id="ai-forget" type="button">Forget</button>` : ""}</div>
+      ${ai.key ? `<div class="row" style="gap:16px"><label class="row small">Model <select id="ai-model">${nearai.MODELS.map(([m, l]) => `<option value="${m}" ${ai.model === m ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
+        <label class="row small"><input type="checkbox" id="ai-voice" ${ai.voice ? "checked" : ""}> Private voice (Whisper on NEAR AI instead of the browser's)</label></div>` : ""}
     </div>
     <div class="card stack" style="margin-top:16px">
       <div class="card-h" style="margin:0"><h2>How scripts are managed</h2>
@@ -760,6 +823,21 @@ function agentView() {
     toast(`${id} removed from your agent`);
   }));
   if ($("#restore")) $("#restore").onclick = () => set({ removed: [] });
+  document.querySelectorAll("[data-pause]").forEach((b) => (b.onclick = () => set({ paused: [...new Set([...(s.paused || []), b.dataset.pause])] })));
+  document.querySelectorAll("[data-keep]").forEach((b) => (b.onclick = () => set({ keepRunning: [...new Set([...(s.keepRunning || []), b.dataset.keep])] })));
+  $("#ai-save").onclick = async () => {
+    const k = $("#ai-key").value.trim();
+    if (!k) { toast("Paste your NEAR AI key first"); return; }
+    $("#ai-save").disabled = true;
+    const ok = await nearai.checkKey(k).catch(() => false);
+    if (!ok) { $("#ai-save").disabled = false; toast("NEAR AI did not accept this key"); return; }
+    nearai.save({ ...nearai.settings(), key: k });
+    toast("NEAR AI connected");
+    agentView();
+  };
+  if ($("#ai-forget")) $("#ai-forget").onclick = () => { nearai.save({ ...nearai.settings(), key: "" }); agentView(); };
+  if ($("#ai-model")) $("#ai-model").onchange = (e) => { nearai.save({ ...nearai.settings(), model: e.target.value }); agentView(); };
+  if ($("#ai-voice")) $("#ai-voice").onchange = (e) => { nearai.save({ ...nearai.settings(), voice: e.target.checked }); };
   bindCommandBox("agent-cmd", false, agentView);
   document.querySelectorAll("[data-deltask]").forEach((b) => (b.onclick = () => {
     cmd.saveTasks(cmd.loadTasks().filter((t) => String(t.id) !== b.dataset.deltask));

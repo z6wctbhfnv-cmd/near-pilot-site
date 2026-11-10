@@ -24,15 +24,16 @@ export async function scriptsOnChain(ids) {
     try {
       const info = await view("strategy_info", { token_id: id });
       if (!info) return;
-      const [holder, record, followers, fees, price, hidden] = await Promise.all([
+      const [holder, record, followers, fees, price, hidden, version] = await Promise.all([
         view("revenue_receiver", { token_id: id }),
         view("record", { token_id: id, from_index: 0, limit: 200 }),
         view("follower_count", { token_id: id }),
         CONFIG.nft.feeToken ? view("fees_earned", { token_id: id, fee_token: CONFIG.nft.feeToken }) : Promise.resolve("0"),
         view("sale_price", { token_id: id }).catch(() => null),
         view("is_hidden", { token_id: id }).catch(() => false),
+        view("script_version", { token_id: id }).catch(() => [1, 0]),
       ]);
-      out[id] = { info, holder, record, followers, fees, price, hidden };
+      out[id] = { info, holder, record, followers, fees, price, hidden, version: version[0], changedAt: version[1] };
     } catch (e) {
       out[id] = { error: String(e.message || e) };
     }
