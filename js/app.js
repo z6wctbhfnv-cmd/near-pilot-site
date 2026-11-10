@@ -687,6 +687,17 @@ function scriptPanel(x, s, chain) {
   </div>`;
 }
 
+const SETTINGS_TABS = [
+  ["general", "General", '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m10 10 2.1 2.1m0-14.2-2.1 2.1m-10 10-2.1 2.1"/></svg>'],
+  ["automation", "Automation", '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>'],
+  ["scripts", "Scripts", '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l8-4 8 4-8 4-8-4zm0 5l8 4 8-4M4 17l8 4 8-4"/></svg>'],
+  ["ai", "AI", '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="14" height="12" rx="3"/><path d="M12 3v4M9 12h.01M15 12h.01M9 16h6"/></svg>'],
+  ["safety", "Safety rules", '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6l8-3z"/></svg>'],
+];
+
+// One settings row, Claude/ChatGPT style: title and a short explanation on the left, the control on the right.
+const srow = (title, desc, control) => `<div class="srow"><div><div class="srow-t">${title}</div>${desc ? `<div class="srow-d">${desc}</div>` : ""}</div><div class="srow-c">${control}</div></div>`;
+
 function agentView(page = state.agentPage || "agent") {
   state.agentPage = page;
   const list = state.data.report.strategies;
@@ -797,62 +808,62 @@ function agentView(page = state.agentPage || "agent") {
         <p class="muted small" style="margin:0">${{ pause: "On a serious problem the agent pauses the script and tells you.", ask: "On a serious problem the agent asks you; the script keeps running meanwhile.", notify: "On a serious problem the agent only tells you." }[s.onProblem]} Change this in <a href="#/settings">Settings</a>.</p></div>
     </div>
     </div>
-    <div ${page === "settings" ? "" : "hidden"}>
-    <div class="card stack" style="margin-top:16px">
-      <div class="card-h" style="margin:0"><h2>AI for your agent</h2>
-        <span class="chip ${ai.key ? "green" : ""}"><span class="d"></span>${ai.key ? "your NEAR AI key is connected" : "built-in parser"}</span></div>
-      <p class="muted small" style="margin:0">Connect your own NEAR AI Cloud key. NEAR AI bills your account directly: top it up on cloud.near.ai, or pay with NEAR staking rewards (your stake stays yours, the rewards cover the agent). Pilot takes nothing and never sees the key — it stays in this browser. A message costs a fraction of a cent on the default model.</p>
-      <div class="row" style="flex-wrap:nowrap"><label class="sr" for="ai-key">NEAR AI key</label>
-        <input type="password" id="ai-key" placeholder="${ai.key ? "•••••••• connected" : "NEAR AI API key (cloud.near.ai → API keys)"}" autocomplete="off" spellcheck="false">
-        <button class="btn sm" id="ai-save" type="button">${ai.key ? "Replace" : "Connect"}</button>
-        ${ai.key ? `<button class="btn sm ghost" id="ai-forget" type="button">Forget</button>` : ""}</div>
-      ${ai.key ? `<div class="row" style="gap:16px"><label class="row small">Model <select id="ai-model">
-          <optgroup label="Private · hosted by NEAR AI in a TEE">${nearai.MODELS.filter((m) => m[2]).map(([m, l]) => `<option value="${m}" ${ai.model === m ? "selected" : ""}>${esc(l)}</option>`).join("")}</optgroup>
-          <optgroup label="Not private · forwarded to the maker">${nearai.MODELS.filter((m) => !m[2]).map(([m, l]) => `<option value="${m}" ${ai.model === m ? "selected" : ""}>${esc(l)}</option>`).join("")}</optgroup></select></label>
-        ${nearai.isPrivate(ai.model) ? `<span class="chip green">private</span>` : `<span class="chip amber">not private: the maker sees your messages</span>`}
-        <label class="row small"><input type="checkbox" id="ai-voice" ${ai.voice ? "checked" : ""}> Private voice (Whisper on NEAR AI instead of the browser's)</label></div>` : ""}
-    </div>
-    <div class="card stack" style="margin-top:16px">
-      <div class="card-h" style="margin:0"><h2>How scripts are managed</h2>
-        <div class="row" role="group" aria-label="Mode">
-          ${[["auto", "Agent decides"], ["pick", "I pick, agent sizes"], ["manual", "Manual shares"]].map(([k, l]) => `<button type="button" class="chip toggle" data-select="${k}" aria-pressed="${mode === k}">${l}</button>`).join("")}</div></div>
-      <p class="muted small" style="margin:0">${{
-        auto: "The agent picks scripts and sizes them as a risk manager. You set the limits below.",
-        pick: "Tick “run” on the scripts you allow. The agent decides how much each gets.",
-        manual: `You set every share. The agent only watches for errors and the drawdown stop. Total: <b class="${manualTotal > 1.0001 ? "neg" : ""}">${pct(manualTotal, 0)}</b> of the crypto part${manualTotal < 0.9999 ? `, the rest stays in USDC` : ""}${manualTotal > 1.0001 ? " — over 100%, lower some shares" : ""}.`,
-      }[mode]}</p>
-      <div class="row" style="gap:16px">
-        <label class="row small">Review <select id="review">${agent.REVIEWS.map(([d, l]) => `<option value="${d}" ${s.reviewEvery === d ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-        <label class="row small"><input type="checkbox" id="perps" ${s.allowPerps ? "checked" : ""}> Allow perps (Hyperliquid, ≤1x)</label>
-        <label class="row small">If a script breaks <select id="on-problem">${agent.ON_PROBLEM.map(([k, l]) => `<option value="${k}" ${s.onProblem === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-        <label class="row small">If a copied script changes <select id="on-change">${agent.ON_CHANGE.map(([k, l]) => `<option value="${k}" ${s.onScriptChange === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-        <button class="btn sm ghost" id="advanced" type="button" aria-pressed="${!!state.advanced}">${state.advanced ? "Hide advanced settings" : "Advanced settings"}</button>
+    <div class="settings" ${page === "settings" ? "" : "hidden"}>
+      <nav class="settings-nav" aria-label="Settings sections">
+        ${SETTINGS_TABS.map(([k, l, icon]) => `<button type="button" data-stab="${k}" aria-current="${(state.settingsTab || "general") === k ? "page" : "false"}">${icon}<span>${l}</span></button>`).join("")}
+      </nav>
+      <div class="settings-body">
+        <section ${(state.settingsTab || "general") === "general" ? "" : "hidden"}>
+          <h2>General</h2>
+          ${srow("Who picks the scripts", {
+            auto: "The agent picks scripts and sizes them as a risk manager.",
+            pick: "You tick “run” on scripts; the agent decides how much each gets.",
+            manual: `You set every share on the script cards. Total now: ${pct(manualTotal, 0)}${manualTotal > 1.0001 ? " — over 100%" : ""}.`,
+          }[mode], `<div class="row" role="group" aria-label="Mode">${[["auto", "Agent"], ["pick", "I pick"], ["manual", "Manual"]].map(([k, l]) => `<button type="button" class="chip toggle" data-select="${k}" aria-pressed="${mode === k}">${l}</button>`).join("")}</div>`)}
+          ${srow("Review shares", "How often the agent re-sizes scripts. Never more than once a day automatically.", `<select id="review">${agent.REVIEWS.map(([d, l]) => `<option value="${d}" ${s.reviewEvery === d ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
+          ${srow("Settings in words", "Type a change; you see it before it applies.", `<form class="row" id="tune" style="flex-wrap:nowrap"><label class="sr" for="tune-in">Settings in words</label><input type="text" id="tune-in" placeholder="no perps · max 40% per script" autocomplete="off" style="width:220px"><button class="btn sm" type="submit">Preview</button></form>`)}
+          ${draft ? `<div class="card" style="box-shadow:none">
+            ${draft.changes.length ? `<ul class="small" style="margin:0 0 8px;padding-left:18px">${draft.changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
+            ${draft.warnings.map((w) => `<p class="muted small" style="margin:0 0 8px">${esc(w)}</p>`).join("")}
+            ${draft.changes.length ? `<div class="row"><button class="btn sm green" id="apply">Apply</button><button class="btn sm ghost" id="discard">Discard</button></div>` : ""}</div>` : ""}
+          ${srow("Reset", "Back to the default settings for the agent and every script.", `<button class="btn sm danger" id="reset" type="button">Reset all</button>`)}
+        </section>
+        <section ${state.settingsTab === "automation" ? "" : "hidden"}>
+          <h2>Automation</h2>
+          ${srow("Before the agent acts", "Ask you to confirm each trade and task, or act at once inside your rules.", `<select id="act-mode"><option value="confirm" ${(state.cmdMode || "confirm") === "confirm" ? "selected" : ""}>Ask me first</option><option value="instant" ${state.cmdMode === "instant" ? "selected" : ""}>Act at once</option></select>`)}
+          ${srow("If a script breaks", "Crashes, invalid weights or stale prices found by the daily check.", `<select id="on-problem">${agent.ON_PROBLEM.map(([k, l]) => `<option value="${k}" ${s.onProblem === k ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
+          ${srow("If a copied script changes", "Its holder published a new version and its record restarted.", `<select id="on-change">${agent.ON_CHANGE.map(([k, l]) => `<option value="${k}" ${s.onScriptChange === k ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
+          ${srow("Daily check", "Runs once a day on every running script. Always on.", `<span class="chip green">on</span>`)}
+        </section>
+        <section ${state.settingsTab === "scripts" ? "" : "hidden"}>
+          <h2>Scripts</h2>
+          ${srow("Allow perps", "Scripts that short or use Hyperliquid perps, at most 1x.", `<input type="checkbox" id="perps" ${s.allowPerps ? "checked" : ""}>`)}
+          ${srow("How the agent sizes scripts", esc(agent.ALLOCATIONS.find((a) => a[0] === s.allocation)?.[2] || ""), `<select id="alloc" ${mode === "manual" ? "disabled" : ""}>${agent.ALLOCATIONS.map(([k, l]) => `<option value="${k}" ${s.allocation === k ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
+          ${srow(`At most per script: <b id="mw-v">${pct(s.maxWeight, 0)}</b>`, "Cap on any one script's share when the agent decides.", `<input type="range" id="mw" min="0.1" max="1" step="0.05" value="${s.maxWeight}" ${mode !== "auto" ? "disabled" : ""}>`)}
+          ${srow(`Skip scripts with drawdown above: <b id="dd-v">${s.maxRecordDrawdown == null ? "off" : pct(s.maxRecordDrawdown, 0)}</b>`, "Measured over the review window.", `<input type="range" id="dd" min="0.05" max="0.5" step="0.05" value="${s.maxRecordDrawdown ?? 0.5}" ${mode !== "auto" ? "disabled" : ""}>`)}
+          ${srow(`Review window: <b id="ww-v">${s.windowWeeks}</b> weeks`, "How much history the agent looks at.", `<input type="range" id="ww" min="4" max="26" step="1" value="${s.windowWeeks}" ${mode !== "auto" ? "disabled" : ""}>`)}
+          ${srow("Each script's own settings", "Size, risk, execution, schedule and open parameters: “Settings” on each script's card.", `<a class="btn sm ghost" href="#/agent">Open scripts</a>`)}
+        </section>
+        <section ${state.settingsTab === "ai" ? "" : "hidden"}>
+          <h2>AI</h2>
+          ${srow("NEAR AI key", "Your own key: NEAR AI bills you directly (top up or pay with NEAR staking rewards). Pilot takes nothing and never sees it; it stays in this browser.",
+            `<div class="row" style="flex-wrap:nowrap"><label class="sr" for="ai-key">NEAR AI key</label><input type="password" id="ai-key" placeholder="${ai.key ? "•••••••• connected" : "API key"}" autocomplete="off" spellcheck="false" style="width:160px"><button class="btn sm" id="ai-save" type="button">${ai.key ? "Replace" : "Connect"}</button>${ai.key ? `<button class="btn sm ghost" id="ai-forget" type="button">Forget</button>` : ""}</div>`)}
+          ${srow("Model", nearai.isPrivate(ai.model) ? "Private: runs inside NEAR AI's TEE." : "Not private: the model's maker sees your messages.",
+            `<select id="ai-model" ${ai.key ? "" : "disabled"}><optgroup label="Private · NEAR AI TEE">${nearai.MODELS.filter((m) => m[2]).map(([m, l]) => `<option value="${m}" ${ai.model === m ? "selected" : ""}>${esc(l)}</option>`).join("")}</optgroup><optgroup label="Not private">${nearai.MODELS.filter((m) => !m[2]).map(([m, l]) => `<option value="${m}" ${ai.model === m ? "selected" : ""}>${esc(l)}</option>`).join("")}</optgroup></select>`)}
+          ${srow("Private voice", "Transcribe with Whisper on NEAR AI instead of the browser (Google or Apple).", `<input type="checkbox" id="ai-voice" ${ai.voice ? "checked" : ""} ${ai.key ? "" : "disabled"}>`)}
+          ${srow("Status", ai.key ? "Your messages are read by the model above." : "Without a key, a built-in parser reads your messages.", `<span class="chip ${ai.key ? "green" : ""}">${ai.key ? "connected" : "built-in parser"}</span>`)}
+        </section>
+        <section ${state.settingsTab === "safety" ? "" : "hidden"}>
+          <h2>Safety rules</h2>
+          ${srow("Signed policy", "The limits live in your NEAR Intents agent policy, not in the AI. Change them by signing new rules.", `<a class="btn sm ghost" href="#/rules">Edit rules</a>`)}
+          ${srow("Per trade · per day", "Largest single trade and daily total.", `<b>${usd(state.policy.perTransactionUsd)} · ${usd(state.policy.dailyUsd)}</b>`)}
+          ${srow("Withdrawals", "Where funds may leave the wallet.", `<b>${state.policy.destinations.length ? esc(state.policy.destinations.join(", ")) : "nowhere"}</b>`)}
+          ${srow("Freeze", "Stop every action at once.", `<a class="btn sm ghost" href="#/safety">Open</a>`)}
+          ${srow("Agent can never", "Send funds out · change your rules · unfreeze itself · see your keys · buy, sell or copy scripts without you.", "")}
+        </section>
       </div>
-      ${state.advanced ? `<div class="grid g2">
-        <div class="stack">
-          <label class="small">How the agent sizes scripts
-            <select id="alloc" ${mode === "manual" ? "disabled" : ""}>${agent.ALLOCATIONS.map(([k, l]) => `<option value="${k}" ${s.allocation === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-          <p class="muted small" style="margin:0">${esc(agent.ALLOCATIONS.find((a) => a[0] === s.allocation)?.[2] || "")}</p>
-          <label class="small">At most per script: <b id="mw-v">${pct(s.maxWeight, 0)}</b>
-            <input type="range" id="mw" min="0.1" max="1" step="0.05" value="${s.maxWeight}" ${mode !== "auto" ? "disabled" : ""} style="width:100%"></label>
-        </div>
-        <div class="stack">
-          <label class="small">Skip scripts with 8-week drawdown above: <b id="dd-v">${s.maxRecordDrawdown == null ? "off" : pct(s.maxRecordDrawdown, 0)}</b>
-            <input type="range" id="dd" min="0.05" max="0.5" step="0.05" value="${s.maxRecordDrawdown ?? 0.5}" ${mode !== "auto" ? "disabled" : ""} style="width:100%"></label>
-          <label class="small">Judge scripts on the last <b id="ww-v">${s.windowWeeks}</b> weeks
-            <input type="range" id="ww" min="4" max="26" step="1" value="${s.windowWeeks}" ${mode !== "auto" ? "disabled" : ""} style="width:100%"></label>
-          <p class="muted small" style="margin:0">Per-script limits (max share, own stop, execution, schedule) are under “Settings” on each script's card on the <a href="#/agent">Agent</a> page.</p>
-        </div></div>` : ""}
-      <form class="row" id="tune" style="flex-wrap:nowrap"><label class="sr" for="tune-in">Settings in words</label>
-        <input type="text" id="tune-in" placeholder="Or in words: no perps · max 40% per script · skip scripts with drawdown over 20%" autocomplete="off">
-        <button class="btn sm" type="submit">Preview</button></form>
-      ${draft ? `<div class="card" style="box-shadow:none">
-        ${draft.changes.length ? `<ul class="small" style="margin:0 0 8px;padding-left:18px">${draft.changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
-        ${draft.warnings.map((w) => `<p class="muted small" style="margin:0 0 8px">${esc(w)}</p>`).join("")}
-        ${draft.changes.length ? `<div class="row"><button class="btn sm green" id="apply">Apply</button><button class="btn sm ghost" id="discard">Discard</button></div>` : ""}</div>` : ""}
-      <button class="btn sm ghost" id="reset" type="button" style="align-self:flex-start">Reset all settings</button>
     </div>
-    </div>
+    <button id="advanced" type="button" hidden></button>
     <div ${page === "settings" ? "hidden" : ""}>
     <div class="card-h" style="margin:24px 0 12px"><h2>${state.showAllScripts ? "My scripts" : "Running scripts"} · ${shown.length} of ${mine.length}</h2>
       <div class="row">${removed.size ? `<button class="btn sm ghost" id="restore" type="button">Restore ${removed.size} removed</button>` : ""}
@@ -891,6 +902,8 @@ function agentView(page = state.agentPage || "agent") {
     set({ excluded: b.checked ? [...s.excluded, id] : s.excluded.filter((x) => x !== id) });
   }));
   $("#perps").onchange = (e) => set({ allowPerps: e.target.checked });
+  document.querySelectorAll("[data-stab]").forEach((b) => (b.onclick = () => { state.settingsTab = b.dataset.stab; agentView(); }));
+  $("#act-mode").onchange = (e) => { state.cmdMode = e.target.value; agentView(); };
   document.querySelectorAll("[data-select]").forEach((b) => (b.onclick = () => set({ select: b.dataset.select })));
   $("#review").onchange = (e) => set({ reviewEvery: +e.target.value });
   $("#advanced").onclick = () => { state.advanced = !state.advanced; agentView(); };
