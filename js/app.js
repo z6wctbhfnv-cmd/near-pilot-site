@@ -4,6 +4,7 @@ import { lineChart, sparkline } from "./chart.js";
 import { compileRules } from "./rules.js";
 import { ask } from "./ask.js";
 import { scriptsOnChain, explorer } from "./chain.js";
+import * as agent from "./agent.js";
 import { defaultPolicy, interpret, checkAttempt, fmt } from "./policy.js";
 import { currentOwner, createPasskey, connectNearWallet, signWithPasskey, disconnect, shortOwner, passkeySupported } from "./wallet.js";
 
@@ -42,7 +43,8 @@ async function load() {
     return r.json();
   });
   const [report, equity, chronicle] = await Promise.all([get("report.json"), get("equity.json"), get("chronicle.json")]);
-  state.data = { report, equity, chronicle };
+  const variants = await get("variants.json").catch(() => ({}));
+  state.data = { report, equity, chronicle, variants };
 }
 
 const live = () => !!CONFIG.apiBase;
@@ -359,7 +361,7 @@ function strategies() {
         ${onchain(s)}
       </article>`).join("")}
     </div>
-    <div class="note" style="margin-top:16px">What the simulation taught us: the weekly review chases strategies that just did well, so it tends to hire at peaks and fire at bottoms. In the product the review works as a risk manager: it fires a strategy for breaking risk rules, not for one bad month. Details are in <code>docs/SIM_FINDINGS.md</code>.</div>`;
+    <div class="note" style="margin-top:16px">How the review works: it is a risk manager, not a talent scout. A script is hired after 8 weeks on paper if it is not in a deep drawdown, fired only for breaking a risk rule, and capital is split by inverse volatility, never by last month's returns. An earlier version that chased recent winners hired at peaks and fired at bottoms. The new rule was written after seeing that problem on the same data, so it still needs an out-of-sample check. Details are in <code>docs/SIM_FINDINGS.md</code>.</div>`;
 }
 const TITLES = { "hold-rebalance": "Hold & rebalance", "trend-sma": "Trend filter (SMA)", "momentum-top2": "Momentum, top 2", "dip-averager": "Dip averager", "vol-target": "Volatility target" };
 const title = (id) => TITLES[id.split("@")[0]] || id.split("@")[0];
@@ -435,6 +437,126 @@ function attemptHtml({ text, attempt, result }) {
 }
 
 // ---------------------------------------------------------------------------------------------
+function agentView() {
+  const list = state.data.report.strategies;
+  const known = list.map((x) => x.id);
+  const s = (state.agent ||= agent.load());
+  const v = agent.variantFor(s, state.data.variants);
+  const sim = state.data.variants[v.key];
+  const draft = state.agentDraft;
+  const script = (state.script ||= { idea: "", code: agent.EXAMPLE_SCRIPT, hash: "", problems: [] });
+  const manual = s.pinned.length > 0;
+  const row = (x) => {
+    const pinned = s.pinned.includes(x.id), excluded = s.excluded.includes(x.id);
+    return `<tr><td><span translate="no">${esc(x.id)}</span>${x.uses_perps ? ` <span class="chip">perps</span>` : ""}</td>
+      <td class="${x.record_return >= 0 ? "pos" : "neg"}">${signed(x.record_return)}</td><td>${pct(x.record_max_drawdown, 0)}</td>
+      <td><label class="row small"><input type="checkbox" data-pin="${esc(x.id)}" ${pinned ? "checked" : ""}> run</label></td>
+      <td><label class="row small"><input type="checkbox" data-ex="${esc(x.id)}" ${excluded ? "checked" : ""} ${manual ? "disabled" : ""}> never</label></td></tr>`;
+  };
+  $("#view").innerHTML = `
+    <div class="head"><div><h1>Agent</h1>
+      <p class="lede">Choose the scripts yourself or let the agent pick them. Tune it in words or with sliders, or write a script of your own. The agent never trades: it only decides which scripts get capital, inside the rules you signed.</p></div>
+      <span class="chip amber"><span class="d"></span>Settings are saved in this browser</span></div>
+    <div class="grid g2">
+      <div class="card stack">
+        <h2>Who picks the scripts</h2>
+        <p class="muted small" style="margin:0">${manual ? `<b>You pick.</b> Only ticked scripts run, in equal shares. No hiring or firing.` : `<b>The agent picks</b> as a risk manager: hires after 8 weeks on paper, fires only for breaking a risk rule, splits by inverse volatility. Tick “run” to choose yourself.`}</p>
+        <div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Script</th><th>2-year record</th><th>Worst drop</th><th></th><th></th></tr></thead>
+          <tbody>${list.map(row).join("")}</tbody></table></div>
+        <label class="row small"><input type="checkbox" id="perps" ${s.allowPerps ? "checked" : ""}> Allow scripts that trade perps (Hyperliquid, ≤1x)</label>
+      </div>
+      <div class="card stack">
+        <h2>Tell the agent</h2>
+        <form class="stack" id="tune"><label class="sr" for="tune-in">Instruction</label>
+          <textarea id="tune-in" rows="3" placeholder="e.g. no perps. skip scripts with drawdown over 20%. max 40% per script" spellcheck="false"></textarea>
+          <div class="row"><button class="btn sm" type="submit">Preview the change</button>
+          <span class="muted small">Works in English and Russian. Nothing applies until you confirm.</span></div></form>
+        ${draft ? `<div class="card" style="box-shadow:none">
+          ${draft.changes.length ? `<ul class="small" style="margin:0 0 8px;padding-left:18px">${draft.changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
+          ${draft.warnings.map((w) => `<p class="muted small" style="margin:0 0 8px">${esc(w)}</p>`).join("")}
+          ${draft.changes.length ? `<div class="row"><button class="btn sm green" id="apply">Apply</button><button class="btn sm ghost" id="discard">Discard</button></div>` : ""}</div>` : ""}
+        <h2 style="margin-top:6px">By hand</h2>
+        <label class="small">At most per script: <b id="mw-v">${pct(s.maxWeight, 0)}</b>
+          <input type="range" id="mw" min="0.1" max="1" step="0.05" value="${s.maxWeight}" ${manual ? "disabled" : ""} style="width:100%"></label>
+        <label class="small">Skip scripts with 8-week drawdown above: <b id="dd-v">${s.maxRecordDrawdown == null ? "off" : pct(s.maxRecordDrawdown, 0)}</b>
+          <input type="range" id="dd" min="0.05" max="0.5" step="0.05" value="${s.maxRecordDrawdown ?? 0.5}" ${manual ? "disabled" : ""} style="width:100%"></label>
+        <label class="small">Judge scripts on the last <b id="ww-v">${s.windowWeeks}</b> weeks
+          <input type="range" id="ww" min="4" max="26" step="1" value="${s.windowWeeks}" ${manual ? "disabled" : ""} style="width:100%"></label>
+        <button class="btn sm ghost" id="reset" type="button">Reset to defaults</button>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <div class="card-h"><h2>On the last 2 years</h2>
+        <span class="chip ${v.exact ? "green" : "amber"}"><span class="d"></span>${v.exact ? "simulated with these exact settings" : "closest simulated setup; exact run needs the Pilot backend"}</span></div>
+      ${sim ? `<div class="grid g3">
+        <div class="kpi"><div class="label">Return</div><div class="value ${sim.return >= 0 ? "pos" : "neg"}">${signed(sim.return)}</div><div class="sub">all in USDC ${signed(state.data.report.benchmarks.all_usdc_vault.total_return)}</div></div>
+        <div class="kpi"><div class="label">Worst drop</div><div class="value">${pct(sim.max_drawdown)}</div><div class="sub">stop at 10%, resets after resume</div></div>
+        <div class="kpi"><div class="label">Paid to script authors</div><div class="value">${usd(sim.author_fees_usd)}</div><div class="sub">5% of new profit</div></div></div>
+        <div style="color:var(--green-ink);margin-top:12px">${sparkline(sim.equity, { width: 900, height: 70, color: "currentColor" })}</div>` : `<p class="muted small">No precomputed variants. Run <code>python3 sim/export_variants.py</code>.</p>`}
+      <p class="muted small" style="margin:10px 0 0">Hypothetical simulation on Nov 2024 – Nov 2026 data, not a forecast. Picking settings because they looked best on this chart is overfitting.</p>
+    </div>
+    <div class="card stack" style="margin-top:16px">
+      <h2>Your own script</h2>
+      <p class="muted small" style="margin:0">Describe an idea; NEAR AI drafts a script. Or write it yourself. Every script is checked, backtested, then minted as an NFT (free, storage only) and spends 8 weeks on paper before it can get capital. Followers pay you 5% of their new profit.</p>
+      <label class="sr" for="idea">Idea</label>
+      <div class="row" style="flex-wrap:nowrap"><input type="text" id="idea" value="${esc(script.idea)}" placeholder="e.g. short ETH when it drops below its 30-day average" autocomplete="off">
+        <button class="btn sm" id="draft" type="button" ${live() ? "" : "disabled"} title="${live() ? "" : "Needs the Pilot backend with a NEAR AI Cloud key"}">Draft with NEAR AI</button></div>
+      <label class="sr" for="code">Script</label>
+      <textarea id="code" rows="10" class="code" spellcheck="false" translate="no">${esc(script.code)}</textarea>
+      <div class="row"><button class="btn sm" id="check" type="button">Check</button>
+        <span class="muted small" id="check-out">${script.problems.length ? `✕ ${esc(script.problems.join("; "))}` : script.hash ? `✓ passes the checks · code hash <span translate="no">${esc(script.hash.slice(0, 16))}…</span>` : ""}</span></div>
+      ${script.hash && !script.problems.length ? `<p class="muted small" style="margin:0">Next: backtest and mint run on the Pilot backend${live() ? "" : " (not connected on this demo site)"}. Minting is open to anyone: <code translate="no">mint_strategy</code> on <code translate="no">${esc(CONFIG.nft?.contract || "the NFT contract")}</code> with this hash.</p>` : ""}
+    </div>`;
+  const set = (patch) => { state.agent = { ...state.agent, ...patch }; agent.save(state.agent); agentView(); };
+  document.querySelectorAll("[data-pin]").forEach((b) => (b.onchange = () => {
+    const id = b.dataset.pin;
+    set({ pinned: b.checked ? [...s.pinned, id] : s.pinned.filter((x) => x !== id) });
+  }));
+  document.querySelectorAll("[data-ex]").forEach((b) => (b.onchange = () => {
+    const id = b.dataset.ex;
+    set({ excluded: b.checked ? [...s.excluded, id] : s.excluded.filter((x) => x !== id) });
+  }));
+  $("#perps").onchange = (e) => set({ allowPerps: e.target.checked });
+  const slider = (id, key, fmtv, conv = Number) => {
+    const el = $("#" + id);
+    el.oninput = () => ($(`#${id}-v`).textContent = fmtv(conv(el.value)));
+    el.onchange = () => set({ [key]: conv(el.value) });
+  };
+  slider("mw", "maxWeight", (x) => pct(x, 0));
+  slider("dd", "maxRecordDrawdown", (x) => (x >= 0.5 ? "off" : pct(x, 0)), (x) => (+x >= 0.5 ? null : +x));
+  slider("ww", "windowWeeks", (x) => String(x));
+  $("#reset").onclick = () => { state.agentDraft = null; set({ ...agent.DEFAULTS }); };
+  $("#tune").onsubmit = (e) => {
+    e.preventDefault();
+    state.agentDraft = agent.tune($("#tune-in").value, known, s);
+    agentView();
+  };
+  if ($("#apply")) $("#apply").onclick = () => { const d = state.agentDraft.settings; state.agentDraft = null; set(d); };
+  if ($("#discard")) $("#discard").onclick = () => { state.agentDraft = null; agentView(); };
+  $("#idea").oninput = (e) => (script.idea = e.target.value);
+  $("#code").oninput = (e) => { script.code = e.target.value; script.hash = ""; script.problems = []; };
+  $("#check").onclick = async () => {
+    script.problems = agent.checkScript(script.code);
+    script.hash = script.problems.length ? "" : await agent.sha256(script.code);
+    agentView();
+  };
+  if (live()) $("#draft").onclick = async () => {
+    const b = $("#draft");
+    b.disabled = true;
+    try {
+      const r = await fetch(`${CONFIG.apiBase}/v1/pilot/script-draft`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ idea: script.idea }) });
+      if (!r.ok) throw new Error(`backend ${r.status}`);
+      script.code = (await r.json()).code;
+      script.hash = ""; script.problems = [];
+      agentView();
+    } catch (err) {
+      b.disabled = false;
+      toast(err.message);
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
 const QUESTIONS = ["Why was momentum-top2 fired?", "When did the drawdown stop trigger?", "Which strategies were hired in 2026-01?", "Why is the crypto part in USDC?"];
 
 function askView(q = "") {
@@ -461,7 +583,7 @@ function askView(q = "") {
 
 // ---------------------------------------------------------------------------------------------
 const ROUTES = {
-  portfolio, rules, strategies, safety,
+  portfolio, rules, strategies, agent: agentView, safety,
   ask: () => askView(new URLSearchParams(location.hash.split("?")[1] || "").get("q") || ""),
 };
 
