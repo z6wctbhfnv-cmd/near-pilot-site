@@ -225,6 +225,7 @@ function rules() {
         <div class="presets" aria-label="Examples">
           <button type="button" class="preset" data-ex="70% stablecoins, 30% crypto, max drawdown 8%, never send funds out">Careful</button>
           <button type="button" class="preset" data-ex="20% stablecoins, 10% gold, 70% crypto, drawdown 20%, $2,000 per trade">Bolder</button>
+          <button type="button" class="preset" data-ex="50% stablecoins, 10% gold, 40% crypto, never lose more than 10% from the all-time peak">Hard floor</button>
           <button type="button" class="preset" data-ex="60% в стейблах, 10% золото, 30% крипта, просадка не больше 12%, никуда не выводить">По-русски</button>
         </div>
         <div class="row"><button class="btn" type="button" id="compile">Turn into a policy</button><span class="muted small" id="compile-msg"></span></div>
@@ -361,7 +362,7 @@ function strategies() {
         ${onchain(s)}
       </article>`).join("")}
     </div>
-    <div class="note" style="margin-top:16px">How the review works: it is a risk manager, not a talent scout. A script is hired after 8 weeks on paper if it is not in a deep drawdown, fired only for breaking a risk rule, and capital is split by inverse volatility, never by last month's returns. An earlier version that chased recent winners hired at peaks and fired at bottoms. The new rule was written after seeing that problem on the same data, so it still needs an out-of-sample check. Details are in <code>docs/SIM_FINDINGS.md</code>.</div>`;
+    <div class="note" style="margin-top:16px">How the review works: it is a risk manager, not a talent scout. A script is hired after 8 weeks on paper if it is not in a deep drawdown, fired only for breaking a risk rule, and capital is split by inverse volatility, never by last month's returns. An earlier version that chased recent winners hired at peaks and fired at bottoms.</div>`;
 }
 const TITLES = { "hold-rebalance": "Hold & rebalance", "trend-sma": "Trend filter (SMA)", "momentum-top2": "Momentum, top 2", "dip-averager": "Dip averager", "vol-target": "Volatility target" };
 const title = (id) => TITLES[id.split("@")[0]] || id.split("@")[0];
@@ -490,10 +491,10 @@ function agentView() {
         <span class="chip ${v.exact ? "green" : "amber"}"><span class="d"></span>${v.exact ? "simulated with these exact settings" : "closest simulated setup; exact run needs the Pilot backend"}</span></div>
       ${sim ? `<div class="grid g3">
         <div class="kpi"><div class="label">Return</div><div class="value ${sim.return >= 0 ? "pos" : "neg"}">${signed(sim.return)}</div><div class="sub">all in USDC ${signed(state.data.report.benchmarks.all_usdc_vault.total_return)}</div></div>
-        <div class="kpi"><div class="label">Worst drop</div><div class="value">${pct(sim.max_drawdown)}</div><div class="sub">stop at 10%, resets after resume</div></div>
+        <div class="kpi"><div class="label">Worst drop</div><div class="value">${pct(sim.max_drawdown)}</div><div class="sub">stop at 10% per fall</div></div>
         <div class="kpi"><div class="label">Paid to script authors</div><div class="value">${usd(sim.author_fees_usd)}</div><div class="sub">5% of new profit</div></div></div>
         <div style="color:var(--green-ink);margin-top:12px">${sparkline(sim.equity, { width: 900, height: 70, color: "currentColor" })}</div>` : `<p class="muted small">No precomputed variants. Run <code>python3 sim/export_variants.py</code>.</p>`}
-      <p class="muted small" style="margin:10px 0 0">Hypothetical simulation on Nov 2024 – Nov 2026 data, not a forecast. Picking settings because they looked best on this chart is overfitting.</p>
+      <p class="muted small" style="margin:10px 0 0">Hypothetical simulation on Nov 2024 – Nov 2026 data, not a forecast.</p>
     </div>
     <div class="card stack" style="margin-top:16px">
       <h2>Your own script</h2>

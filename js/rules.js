@@ -51,6 +51,8 @@ export function compileRules(text, portfolioUsd = 10_000) {
   if (ddm) dd = num(ddm[1]) / 100;
   else warnings.push("no drawdown limit found: using 10%.");
   if (dd < 0.02 || dd > 0.5) throw new Error("drawdown limit must be between 2% and 50%");
+  // "never below 90% of the peak" / "от максимума" / "ever" -> one floor from the all-time peak.
+  const ddMode = /(?:all[- ]time|\bever\b|never (?:lose|fall|drop)|from (?:the )?(?:all-time )?peak|от максимума|никогда не (?:теря|пада|опуска))/.test(t) ? "from_peak" : "episode";
 
   const dm = first(t, `${MONEY}\\s*(?:per day|a day|daily|/day|в день|за день)`, `(?:daily|per day|в день)[^\\d$]{0,25}${MONEY}`);
   let daily = dm ? money(dm) : null;
@@ -74,13 +76,15 @@ export function compileRules(text, portfolioUsd = 10_000) {
   if (perTx === null) perTx = Math.round(Math.max(100, Math.min(daily, portfolioUsd * 0.1)) * 100) / 100;
 
   const r4 = (x) => Math.round(x * 1e4) / 1e4;
-  const mandate = { stable_weight: r4(w.stable), gold_weight: r4(w.gold), crypto_weight: r4(1 - r4(w.stable) - r4(w.gold)), max_drawdown: dd };
+  const mandate = { stable_weight: r4(w.stable), gold_weight: r4(w.gold), crypto_weight: r4(1 - r4(w.stable) - r4(w.gold)), max_drawdown: dd, drawdown_mode: ddMode };
   const policy = defaultPolicy({ actions, perTransactionUsd: perTx, dailyUsd: daily, destinations });
   const summary = [
     `${pct(mandate.stable_weight)} in stablecoins earning vault yield`,
     `${pct(mandate.gold_weight)} in gold (XAUT)`,
     `${pct(mandate.crypto_weight)} in crypto, managed by strategy scripts`,
-    `If the portfolio falls ${pct(dd)} from its peak: sell everything to USDC and freeze until you resume`,
+    ddMode === "from_peak"
+      ? `Never below ${pct(1 - dd)} of the all-time peak: at the floor sell everything to USDC and freeze; after you resume, risk shrinks with the buffer left`
+      : `If the portfolio falls ${pct(dd)} from its peak: sell everything to USDC and freeze until you resume; the limit restarts after each resume`,
     `At most $${fmt(perTx)} per swap and $${fmt(daily)} of swaps per day`,
     destinations.length ? `Withdrawals only to ${destinations.join(", ")}` : "The agent can only swap: no transfers or withdrawals",
     "You can freeze the agent at any moment; freezing is never delayed",
