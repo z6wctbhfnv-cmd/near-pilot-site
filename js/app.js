@@ -165,7 +165,7 @@ function portfolio() {
         <div class="limit" role="img" aria-label="${pct(m.max_drawdown)} of a ${pct(ddLimit, 0)} limit"><i style="width:${Math.min(100, (m.max_drawdown / 0.3) * 100)}%"></i><s style="left:${(ddLimit / 0.3) * 100}%"></s></div>
         <div class="sub">limit ${pct(ddLimit, 0)} · without management ${pct(b.same_weights_buy_and_hold.max_drawdown)}</div></div>
       <div class="card kpi"><div class="label">Costs</div><div class="value">${usd(m.fees_usd)}</div><div class="sub">${fmt(m.trades)} swaps${m.perp_trades ? ` · ${fmt(m.perp_trades)} perp orders` : ""} · ${fmt(m.refused)} refused</div>
-        ${m.author_fees_usd != null ? `<div class="sub">script fees ${usd(m.author_fees_usd)} to authors · ${usd(m.platform_fees_usd)} to Pilot</div>` : ""}
+        ${m.author_fees_usd != null ? `<div class="sub">to script authors ${usd(m.author_fees_usd)} · to Pilot ${usd((m.platform_fees_usd || 0) + (m.pilot_trade_fees_usd || 0))}</div>` : ""}
         ${m.perp_trades ? `<div class="sub">perp funding ${m.funding_usd >= 0 ? "earned" : "paid"} ${usd(Math.abs(m.funding_usd))} · max leverage ${m.max_leverage.toFixed(2)}x</div>` : ""}</div>
     </div>
     <div class="card" style="margin-top:16px">
@@ -381,12 +381,12 @@ function strategies() {
     </div>
     <div class="card" style="overflow-x:auto;margin-top:16px">
       <table class="tbl"><thead><tr><th>#</th><th>Script</th>
-        ${th("roi", lb.unit === "pct" ? "ROI" : "PnL")}${th("mdd", "Max drawdown")}${th("ratio", "Return / drop")}<th>Days running</th>${th("copiers", "Copiers")}<th>Holder</th><th>For sale</th><th></th></tr></thead>
+        ${th("roi", lb.unit === "pct" ? "ROI" : "PnL")}${th("mdd", "Max drawdown")}${th("ratio", "Return / drop")}<th>Days running</th>${th("copiers", "Copiers")}<th>Copying</th><th>Holder</th><th>For sale</th><th></th></tr></thead>
       <tbody>${rows.map(({ x, st, copiers }, i) => `<tr>
         <td>${i + 1}</td>
         <td><b>${esc(title(x.id))}</b> <span class="muted small" translate="no">${esc(x.id)}</span>${x.uses_perps ? ` <span class="chip">perps</span>` : ""}</td>
         <td>${st.days ? ret(st) : "—"}</td><td>${st.days ? pct(st.mdd, 1) : "—"}</td><td>${st.days ? st.ratio.toFixed(2) : "—"}</td>
-        <td>${st.days} ${chain[x.id]?.version > 1 ? `<span class="chip amber">v${chain[x.id].version} · changed ${esc(DATE.format(new Date(chain[x.id].changedAt)))}</span>` : `<span class="muted small">backtest</span>`}</td><td>${copiers}</td>
+        <td>${st.days} ${chain[x.id]?.version > 1 ? `<span class="chip amber">v${chain[x.id].version} · changed ${esc(DATE.format(new Date(chain[x.id].changedAt)))}</span>` : `<span class="muted small">backtest</span>`}</td><td>${copiers}</td><td>${chain[x.id]?.bond ? (chain[x.id].bond.held >= chain[x.id].bond.required ? `<span class="chip green">open · ${(chain[x.id].fee?.bps ?? 500) / 100}%</span>` : `<span class="chip">no bond</span>`) : "—"}</td>
         <td>${chain[x.id]?.holder ? `<span translate="no">${esc(chain[x.id].holder)}</span>` : "—"}</td>
         <td>${chain[x.id]?.price ? (Number(BigInt(chain[x.id].price) / 10n ** 21n) / 1000).toLocaleString("en-US") + " NEAR" : "—"}</td>
         <td>${chain[x.id]?.info ? `<span class="chip green">on-chain ✓</span>` : ""}</td></tr>`).join("")
@@ -679,6 +679,7 @@ function scriptPanel(x, s, chain) {
     ${row("Trading hours (UTC)", `${num("hoursFrom", ts.hoursFrom, "–", 'min="0" max="23"')}${num("hoursTo", ts.hoursTo, "", 'min="1" max="24"')} ${live}`)}
     ${asHolder ? `<b class="small">6. Publishing</b>
       ${row("Show on the leaderboard", `<input type="checkbox" checked disabled> <span class="muted small">set_hidden</span>`)}
+      ${row("Bond (skin in the game)", `<b>$${(c.bond?.held ?? 0).toFixed(0)}</b> of $${(c.bond?.required ?? 100).toFixed(0)} required <button class="btn sm ghost" data-bond="${esc(x.id)}" type="button">Add bond</button>`, "1% of copiers' capital, min $100; locked while copied")}
       ${row("Copy fee (0–10%)", `<input type="number" id="fee-${esc(x.id)}" min="0" max="10" step="0.5" value="${c.fee ? c.fee.bps / 100 : 5}" style="width:76px"> % <button class="btn sm ghost" data-setfee="${esc(x.id)}" type="button">Set</button>`, "raises apply after 7 days")}
       ${row("For sale at", `<input type="number" id="price-${esc(x.id)}" min="0" step="0.5" placeholder="not for sale" style="width:110px"> NEAR <button class="btn sm ghost" data-list="${esc(x.id)}" type="button">List</button>`)}`
       : row("Copy fee", `<b>${fee}</b> of your new profit`, "set by the holder")}
@@ -755,7 +756,9 @@ function agentView() {
           ? `<button class="btn sm danger" data-rm="${esc(x.id)}" type="button">Confirm remove</button><button class="btn sm ghost" data-rmno type="button">Keep</button>`
           : `<button class="btn sm ghost" data-rmask="${esc(x.id)}" type="button">Remove</button>`}
         <button class="btn sm ghost" data-panel="${esc(x.id)}" type="button" aria-expanded="${state.panel === x.id}">${state.panel === x.id ? "Close settings" : "Settings"}</button>
-        <button class="btn sm ghost" data-copy="${esc(x.id)}" type="button">Copy · ${chain[x.id]?.fee ? (chain[x.id].fee.bps / 100).toFixed(chain[x.id].fee.bps % 100 ? 2 : 0) : 5}% of profit</button>
+        ${chain[x.id]?.bond && chain[x.id].bond.held < chain[x.id].bond.required
+          ? `<span class="chip" title="The holder must lock at least $${chain[x.id].bond.required.toFixed(0)} (1% of copiers' capital, min $100)">copying closed: holder bond $${chain[x.id].bond.held.toFixed(0)} / $${chain[x.id].bond.required.toFixed(0)}</span>`
+          : `<button class="btn sm ghost" data-copy="${esc(x.id)}" type="button">Copy · ${chain[x.id]?.fee ? (chain[x.id].fee.bps / 100).toFixed(chain[x.id].fee.bps % 100 ? 2 : 0) : 5}% of profit</button>`}
         <button class="btn sm" data-buy="${esc(x.id)}" type="button">${price ? "Buy for " + (Number(BigInt(price) / 10n ** 21n) / 1000).toLocaleString("en-US") + " NEAR" : "Make an offer"}</button>
       </div>
       ${state.advanced ? `<div class="row small" style="gap:16px;border-top:1px solid var(--line);padding-top:8px">
@@ -915,6 +918,8 @@ function agentView() {
   });
   const nftC = CONFIG.nft?.contract || "<nft-contract>";
   const holderCmd = (id, method, args, deposit = "0 NEAR") => showAction(id, `Signed by the script's holder. The site signs this with your wallet once the backend is connected; the same transaction from the CLI:\n\nnear contract call-function as-transaction ${nftC} ${method} json-args '${JSON.stringify(args)}' prepaid-gas '50 Tgas' attached-deposit '${deposit}' sign-as <holder>.testnet network-config testnet sign-with-keychain send`);
+  document.querySelectorAll("[data-bond]").forEach((b) => (b.onclick = () => showAction(b.dataset.bond,
+    `Lock the bond with a USDC transfer to the NFT contract (the holder signs):\n\nnear contract call-function as-transaction ${CONFIG.nft?.feeToken || "<usdc>"} ft_transfer_call json-args '{"receiver_id":"${nftC}","amount":"${Math.round((chain[b.dataset.bond]?.bond?.required || 100) * 1e6)}","msg":"{\\"token_id\\":\\"${b.dataset.bond}\\",\\"bond\\":true}"}' prepaid-gas '100 Tgas' attached-deposit '1 yoctoNEAR' sign-as <holder>.testnet network-config testnet sign-with-keychain send`)));
   document.querySelectorAll("[data-setfee]").forEach((b) => (b.onclick = () => {
     const pctv = Math.max(0, Math.min(10, +$(`#fee-${CSS.escape(b.dataset.setfee)}`).value || 0));
     holderCmd(b.dataset.setfee, "set_copy_fee", { token_id: b.dataset.setfee, bps: Math.round(pctv * 100) });

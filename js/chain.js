@@ -24,7 +24,7 @@ export async function scriptsOnChain(ids) {
     try {
       const info = await view("strategy_info", { token_id: id });
       if (!info) return;
-      const [holder, record, followers, fees, price, hidden, version, fee, params] = await Promise.all([
+      const [holder, record, followers, fees, price, hidden, version, fee, params, bond] = await Promise.all([
         view("revenue_receiver", { token_id: id }),
         view("record", { token_id: id, from_index: 0, limit: 200 }),
         view("follower_count", { token_id: id }),
@@ -34,9 +34,11 @@ export async function scriptsOnChain(ids) {
         view("script_version", { token_id: id }).catch(() => [1, 0]),
         view("copy_fee", { token_id: id }).catch(() => [500, 0, 0]),
         view("open_params", { token_id: id }).catch(() => "[]"),
+        view("bond_status", { token_id: id }).catch(() => ["0", "100000000"]),
       ]);
       out[id] = { info, holder, record, followers, fees, price, hidden, version: version[0], changedAt: version[1],
-        fee: { bps: fee[0], next: fee[1], at: fee[2] }, openParams: (() => { try { return JSON.parse(params); } catch { return []; } })() };
+        fee: { bps: fee[0], next: fee[1], at: fee[2] }, openParams: (() => { try { return JSON.parse(params); } catch { return []; } })(),
+        bond: { held: Number(bond[0]) / 1e6, required: Number(bond[1]) / 1e6 } };
     } catch (e) {
       out[id] = { error: String(e.message || e) };
     }
