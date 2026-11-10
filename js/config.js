@@ -6,7 +6,7 @@ export const CONFIG = {
   allowlist: [],
   // Strategy NFT contract (one NFT per script). contract: null = show simulation data only.
   nft: {
-    contract: "pilot-nft-10681.testnet",
+    contract: "pilot-nft2-14805.testnet",
     rpc: "https://test.rpc.fastnear.com",
     explorer: "https://testnet.nearblocks.io/address",
     feeToken: "usdc.fakes.testnet",

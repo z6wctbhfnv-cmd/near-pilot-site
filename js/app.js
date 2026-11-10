@@ -5,6 +5,7 @@ import { compileRules } from "./rules.js";
 import { ask } from "./ask.js";
 import { scriptsOnChain, explorer } from "./chain.js";
 import * as agent from "./agent.js";
+import * as cmd from "./command.js";
 import { defaultPolicy, interpret, checkAttempt, fmt } from "./policy.js";
 import { currentOwner, createPasskey, connectNearWallet, signWithPasskey, disconnect, shortOwner, passkeySupported } from "./wallet.js";
 
@@ -154,6 +155,7 @@ function portfolio() {
       <div class="row"><span class="chip amber"><span class="d"></span>Simulation · hypothetical</span>
       ${live() && allowed() ? `<span class="chip green"><span class="d"></span>Live</span>` : ""}</div>
     </div>
+    <div style="margin-bottom:16px">${commandBox("trade-cmd", { tradeOnly: true, placeholder: "e.g. buy BTC for $100 · продай ETH на $50" })}</div>
     <div class="grid g4">
       <div class="card kpi"><div class="label">Value</div><div class="value">${usd(m.end_equity)}</div><div class="sub">from ${usd(m.start_equity)}</div></div>
       <div class="card kpi"><div class="label">Return, 2 years</div><div class="value ${m.total_return >= 0 ? "pos" : "neg"}">${signed(m.total_return)}</div>
@@ -198,6 +200,7 @@ function portfolio() {
     btn.setAttribute("aria-pressed", state.visible.has(k));
     drawChart();
   }));
+  bindCommandBox("trade-cmd", true, portfolio);
 }
 
 const DATE = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
@@ -326,6 +329,15 @@ async function doSign() {
 }
 
 // ---------------------------------------------------------------------------------------------
+const LB_COLS = [
+  { key: "2y", label: "2 years", get: (x) => x.periods?.["2y"] ?? x.record_return, fmt: (v) => signed(v) },
+  { key: "1y", label: "1 year", get: (x) => x.periods?.["1y"], fmt: (v) => signed(v) },
+  { key: "1m", label: "1 month", get: (x) => x.periods?.["1m"], fmt: (v) => signed(v) },
+  { key: "ratio", label: "Return / drop", get: (x) => (x.periods?.["2y"] ?? x.record_return) / Math.max(x.record_max_drawdown, 0.01), fmt: (v) => v.toFixed(2) },
+  { key: "dd", label: "Worst drop", get: (x) => -x.record_max_drawdown, fmt: (v) => pct(-v, 0) },
+  { key: "followers", label: "Copiers", get: (x) => Number(state.chain?.[x.id]?.followers ?? 0), fmt: (v) => String(v) },
+];
+
 function strategies() {
   const list = state.data.report.strategies;
   if (CONFIG.nft?.contract && !state.chain) {
@@ -333,38 +345,48 @@ function strategies() {
     scriptsOnChain(list.map((s) => s.id)).then((c) => { state.chain = c; if (location.hash.includes("strategies")) strategies(); });
   }
   const chain = state.chain || {};
-  const onchain = (s) => {
-    const c = chain[s.id];
-    if (!CONFIG.nft?.contract) return "";
-    if (!c) return `<div class="muted small">Checking the chain…</div>`;
-    if (c.error) return `<div class="muted small">Chain: ${esc(c.error)}</div>`;
-    const ok = c.info.code_hash === s.code_hash;
-    return `<div class="nft"><a href="${esc(explorer(CONFIG.nft.contract))}" target="_blank" rel="noopener">On-chain · ${c.record.length} checkpoints</a>
-      <span>${ok ? "hash matches ✓" : "hash differs ✗"} · holder <span translate="no">${esc(c.holder)}</span></span></div>`;
+  const sortKey = state.lbSort || "ratio";
+  const col = LB_COLS.find((c) => c.key === sortKey);
+  const ranked = [...list].sort((a, b) => (col.get(b) ?? -1e9) - (col.get(a) ?? -1e9));
+  const cell = (c, x) => {
+    const v = c.get(x);
+    if (v == null || Number.isNaN(v)) return "—";
+    const cls = ["2y", "1y", "1m"].includes(c.key) ? (v >= 0 ? "pos" : "neg") : "";
+    return `<span class="${cls}">${c.fmt(v)}</span>`;
   };
-  const chip = { active: "green", incubator: "amber", retired: "" };
+  const holder = (id) => chain[id]?.holder ? `<span translate="no">${esc(chain[id].holder)}</span>` : "—";
+  const onchain = (x) => {
+    const c = chain[x.id];
+    if (!CONFIG.nft?.contract || !c) return "";
+    if (c.error) return `<span class="muted small">chain: ${esc(c.error)}</span>`;
+    return c.info?.code_hash === x.code_hash ? `<span class="chip green">on-chain ✓</span>` : `<span class="chip red">hash differs</span>`;
+  };
   $("#view").innerHTML = `
-    <div class="head"><div><h1>Strategies</h1>
-      <p class="lede">Each strategy is a script: plain code, not a chatbot. Each script is one NFT, bound to the hash of its code and parameters, so a record can never move to different code. Agents follow a script; the NFT never touches their wallets. Whoever holds the NFT receives the author's share. Strategies marked “perps” also trade Hyperliquid perpetuals through near.com, capped at 1x gross leverage.</p></div>
-      <span class="chip amber"><span class="d"></span>Records from the simulation</span></div>
-    <div class="grid g3">${list.map((s) => `
-      <article class="card strat">
-        <div class="top"><div><h3>${esc(title(s.id))}</h3><div class="id" translate="no">${esc(s.id)}${s.uses_perps ? ` <span class="chip">perps</span>` : ""}</div></div>
-          <span class="chip ${chip[s.state]}"><span class="d"></span>${esc(s.state)}${s.state === "active" ? ` · ${pct(s.allocation, 0)} of capital` : ""}</span></div>
-        <p class="muted small" style="margin:0">${esc(s.doc)}</p>
-        <div style="color:${s.record_return >= 0 ? "var(--green-ink)" : "var(--red)"}">${sparkline(s.weekly_index, { width: 300, height: 44, color: "currentColor" })}</div>
-        <div class="stats">
-          <div><small>2-year record</small><b class="${s.record_return >= 0 ? "pos" : "neg"}">${signed(s.record_return)}</b></div>
-          <div><small>Worst drop</small><b>${pct(s.record_max_drawdown, 0)}</b></div>
-          <div><small>Hired / fired</small><b>${s.hires} / ${s.fires}</b></div>
-        </div>
-        <div class="nft"><span translate="no" title="sha256 of the script: ${esc(s.code_hash || "")}">script ${esc((s.code_hash || "").slice(0, 12))}…</span><span>${chain[s.id]?.followers ?? s.followers ?? 0} following · revenue → holder</span></div>
-        ${onchain(s)}
-      </article>`).join("")}
+    <div class="head"><div><h1>Leaderboard</h1>
+      <p class="lede">Every script is an NFT. Its record is public; its code and settings are not (the NFT holds only the code's hash). Buy a script outright, or copy it and pay 5% of your new profit to its holder.</p></div>
+      <span class="chip amber"><span class="d"></span>Backtest records until scripts trade live</span></div>
+    <div class="card" style="overflow-x:auto">
+      <table class="tbl"><thead><tr><th>#</th><th>Script</th>
+        ${LB_COLS.map((c) => `<th><button type="button" class="chip toggle" data-sort="${c.key}" aria-pressed="${c.key === sortKey}">${c.label}${c.key === sortKey ? " ↓" : ""}</button></th>`).join("")}
+        <th>Holder</th><th>For sale</th><th></th></tr></thead>
+      <tbody>${ranked.map((x, i) => `<tr>
+        <td>${i + 1}</td>
+        <td><b>${esc(title(x.id))}</b> <span class="muted small" translate="no">${esc(x.id)}</span>${x.uses_perps ? ` <span class="chip">perps</span>` : ""}</td>
+        ${LB_COLS.map((c) => `<td>${cell(c, x)}</td>`).join("")}
+        <td>${holder(x.id)}</td>
+        <td>${chain[x.id]?.price ? (Number(BigInt(chain[x.id].price) / 10n ** 21n) / 1000).toLocaleString("en-US") + " NEAR" : "—"}</td>
+        <td>${onchain(x)}</td></tr>`).join("")}</tbody></table>
+      <p class="muted small" style="margin:10px 0 0">Ranked by ${esc(col.label.toLowerCase())}. “Return / drop” is the 2-year return divided by the worst drop: it rewards steady scripts over lucky ones. Buy and copy are on each script's card on the Agent page.</p>
     </div>
-    <div class="note" style="margin-top:16px">How the review works: it is a risk manager, not a talent scout. A script is hired after 8 weeks on paper if it is not in a deep drawdown, fired only for breaking a risk rule, and capital is split by inverse volatility, never by last month's returns. An earlier version that chased recent winners hired at peaks and fired at bottoms.</div>`;
+    <div class="note" style="margin-top:16px">How the agent picks: it is a risk manager, not a talent scout. A script is hired once it has enough history to measure its risk and is not in a deep drawdown, fired only for breaking a risk rule, and capital is split by inverse volatility, never by last month's returns.</div>`;
+  document.querySelectorAll("[data-sort]").forEach((b) => (b.onclick = () => { state.lbSort = b.dataset.sort; strategies(); }));
 }
-const TITLES = { "hold-rebalance": "Hold & rebalance", "trend-sma": "Trend filter (SMA)", "momentum-top2": "Momentum, top 2", "dip-averager": "Dip averager", "vol-target": "Volatility target" };
+const TITLES = {
+  "hold-rebalance": "Hold & rebalance (baseline)", "momentum-top2": "Momentum rotation", "vol-target": "Volatility target",
+  "trend-longshort": "Trend long/short", "funding-carry": "Funding carry", "mean-reversion": "Mean reversion",
+  "eth-btc-relative": "ETH vs BTC", "gold-crypto-rotation": "Gold / crypto rotation", "donchian-breakout": "Breakout (Donchian)",
+  "funding-reversion": "Funding reversion", "trend-sma": "Trend filter (SMA)", "dip-averager": "Dip averager",
+};
 const title = (id) => TITLES[id.split("@")[0]] || id.split("@")[0];
 
 // ---------------------------------------------------------------------------------------------
@@ -438,6 +460,113 @@ function attemptHtml({ text, attempt, result }) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Command box: text or voice -> trade / task / settings, checked by the signed policy.
+// mode "confirm" waits for a tap; mode "instant" runs at once (still inside the policy).
+function commandBox(id, { tradeOnly = false, placeholder }) {
+  const c = (state.cmd ||= {});
+  const box = (c[id] ||= { text: "", log: [], listening: false });
+  const mode = state.cmdMode || "confirm";
+  return `<div class="card stack" id="${id}">
+    <div class="card-h" style="margin:0"><h2>${tradeOnly ? "Trade by text or voice" : "Talk to your agent"}</h2>
+      <div class="row" role="group" aria-label="When to act">
+        <button type="button" class="chip toggle" data-mode="confirm" aria-pressed="${mode === "confirm"}">Ask me first</button>
+        <button type="button" class="chip toggle" data-mode="instant" aria-pressed="${mode === "instant"}">Act at once</button></div></div>
+    <form class="row" style="flex-wrap:nowrap" data-cmd="${id}">
+      <label class="sr" for="${id}-in">Message</label>
+      <input type="text" id="${id}-in" value="${esc(box.text)}" placeholder="${esc(placeholder)}" autocomplete="off" spellcheck="false">
+      ${cmd.voiceSupported() ? `<button type="button" class="btn sm ghost" data-mic="${id}" aria-pressed="${box.listening}" aria-label="Speak">${box.listening ? "● Listening" : "🎤"}</button>` : ""}
+      <button class="btn sm" type="submit">Send</button></form>
+    ${cmd.voiceSupported() ? "" : `<p class="muted small" style="margin:0">Voice needs Chrome, Edge or Safari.</p>`}
+    <div class="stack">${box.log.map((x, i) => cmdRow(id, x, i)).join("")}</div>
+    <p class="muted small" style="margin:0">${live() ? "" : "Simulation: nothing is sent. "}Every action is checked against the policy you signed; the agent can never send funds out.${tradeOnly ? "" : " With the backend, a NEAR AI model (private, in a TEE) reads your message; here a built-in parser does."}</p>
+  </div>`;
+}
+
+function cmdRow(id, x, i) {
+  const chip = x.status === "done" ? "green" : x.status === "refused" ? "red" : x.status === "pending" ? "amber" : "";
+  const label = { done: x.type === "task" ? "task saved" : x.type === "tune" ? "applied" : "sent (simulated)", refused: "refused", pending: "waiting for you", info: "agent" }[x.status];
+  return `<div class="row" style="justify-content:space-between;gap:8px;border-top:1px solid var(--line);padding-top:8px">
+    <div><div class="small quote">“${esc(x.input)}”</div><div class="small">${esc(x.text)}</div></div>
+    <div class="row"><span class="chip ${chip}">${esc(label)}</span>
+    ${x.status === "pending" ? `<button class="btn sm green" data-ok="${id}:${i}">Confirm</button><button class="btn sm ghost" data-no="${id}:${i}">Cancel</button>` : ""}</div></div>`;
+}
+
+function runCommand(id, message, tradeOnly) {
+  const box = state.cmd[id];
+  const r = cmd.route(message, { tradeOnly });
+  const mode = state.cmdMode || "confirm";
+  let item;
+  if (r.type === "trade") {
+    const attempt = { action: "swap", assetFrom: r.side === "buy" ? "USDC" : r.asset, assetTo: r.side === "buy" ? r.asset : "USDC", usd: r.usd };
+    const res = checkAttempt(attempt, state.policy);
+    const text = `${r.side === "buy" ? "Buy" : "Sell"} $${fmt(r.usd)} of ${r.asset}`;
+    item = res.allowed ? { type: "trade", input: message, text, status: mode === "instant" ? "done" : "pending", payload: r }
+      : { type: "trade", input: message, text: `${text}: ${res.body.errors[0].detail}`, status: "refused" };
+  } else if (r.type === "task") {
+    item = { type: "task", input: message, text: cmd.describeTask(r.task), status: mode === "instant" ? "done" : "pending", payload: r.task };
+  } else if (r.type === "tune") {
+    const known = state.data.report.strategies.map((x) => x.id);
+    const d = agent.tune(r.text, known, (state.agent ||= agent.load()));
+    item = d.changes.length ? { type: "tune", input: message, text: d.changes.join("; "), status: mode === "instant" ? "done" : "pending", payload: d.settings }
+      : { type: "tune", input: message, text: d.warnings.join(" "), status: "info" };
+  } else {
+    item = { type: "answer", input: message, text: r.text, status: "info" };
+  }
+  if (item.status === "done") applyCommand(item);
+  box.log = [item, ...box.log].slice(0, 6);
+  box.text = "";
+}
+
+function applyCommand(item) {
+  if (item.type === "task") {
+    const tasks = cmd.loadTasks();
+    tasks.push({ ...item.payload, id: Date.now() });
+    cmd.saveTasks(tasks);
+  } else if (item.type === "tune") {
+    state.agent = item.payload;
+    agent.save(state.agent);
+  }
+}
+
+function bindCommandBox(id, tradeOnly, rerender) {
+  const box = state.cmd[id];
+  document.querySelectorAll(`#${id} [data-mode]`).forEach((b) => (b.onclick = () => { state.cmdMode = b.dataset.mode; rerender(); }));
+  $(`#${id}-in`).oninput = (e) => (box.text = e.target.value);
+  $(`[data-cmd="${id}"]`).onsubmit = (e) => {
+    e.preventDefault();
+    const v = $(`#${id}-in`).value.trim();
+    if (v) { runCommand(id, v, tradeOnly); rerender(); }
+  };
+  const mic = $(`[data-mic="${id}"]`);
+  if (mic) mic.onclick = () => {
+    if (box.stop) { box.stop(); return; }
+    box.listening = true;
+    rerender();
+    const lang = navigator.language.startsWith("ru") ? "ru-RU" : "en-US";
+    box.stop = cmd.listen({
+      lang,
+      onText: (t, final) => {
+        box.text = t;
+        const el = $(`#${id}-in`);
+        if (el) el.value = t;
+        if (final) { box.stop = null; box.listening = false; runCommand(id, t, tradeOnly); rerender(); }
+      },
+      onEnd: () => { box.stop = null; if (box.listening) { box.listening = false; rerender(); } },
+      onError: (err) => { box.stop = null; box.listening = false; toast(err === "not-allowed" ? "Microphone access was blocked" : `Voice: ${err}`); rerender(); },
+    });
+  };
+  document.querySelectorAll(`#${id} [data-ok]`).forEach((b) => (b.onclick = () => {
+    const x = box.log[+b.dataset.ok.split(":")[1]];
+    x.status = "done";
+    applyCommand(x);
+    rerender();
+  }));
+  document.querySelectorAll(`#${id} [data-no]`).forEach((b) => (b.onclick = () => {
+    box.log.splice(+b.dataset.no.split(":")[1], 1);
+    rerender();
+  }));
+}
+
 function agentView() {
   const list = state.data.report.strategies;
   const known = list.map((x) => x.id);
@@ -454,29 +583,71 @@ function agentView() {
       <td><label class="row small"><input type="checkbox" data-pin="${esc(x.id)}" ${pinned ? "checked" : ""}> run</label></td>
       <td><label class="row small"><input type="checkbox" data-ex="${esc(x.id)}" ${excluded ? "checked" : ""} ${manual ? "disabled" : ""}> never</label></td></tr>`;
   };
+  const tasks = cmd.loadTasks();
+  const health = state.data.report.health?.scripts || {};
+  const chain = state.chain || {};
+  if (CONFIG.nft?.contract && !state.chain) {
+    state.chain = {};
+    scriptsOnChain(known).then((c) => { state.chain = c; if (location.hash.includes("agent")) agentView(); });
+  }
+  const running = (x) => (manual ? s.pinned.includes(x.id) : x.allocation > 0 && !s.excluded.includes(x.id) && (s.allowPerps || !x.uses_perps));
+  const per = (x, k) => (x.periods?.[k] == null ? "—" : `<span class="${x.periods[k] >= 0 ? "pos" : "neg"}">${signed(x.periods[k])}</span>`);
+  const hchip = (st) => ({ ok: `<span class="chip green"><span class="d"></span>checked today</span>`, warn: `<span class="chip amber"><span class="d"></span>warning</span>`, stop: `<span class="chip red"><span class="d"></span>paused</span>` })[st] || "";
+  const card = (x) => {
+    const pinned = s.pinned.includes(x.id), excluded = s.excluded.includes(x.id);
+    const h = health[x.id];
+    const price = chain[x.id]?.price;
+    return `<article class="card strat">
+      <div class="top"><div><h3>${esc(title(x.id))}</h3><div class="id" translate="no">${esc(x.id)}${x.uses_perps ? ` <span class="chip">perps</span>` : ""}</div></div>
+        <div class="row">${hchip(h?.status)}${running(x) ? `<span class="chip green">${manual ? "running" : pct(x.allocation, 0) + " of crypto"}</span>` : `<span class="chip">idle</span>`}</div></div>
+      <p class="muted small" style="margin:0">${esc((x.doc || "").split("\n")[0])}</p>
+      ${h?.findings?.length ? `<p class="small" style="margin:0;color:var(--amber)">${esc(h.findings.map((f) => f.detail).join("; "))}</p>` : ""}
+      <div style="overflow-x:auto"><table class="tbl"><thead><tr><th>1 week</th><th>1 month</th><th>3 months</th><th>1 year</th><th>2 years</th><th>Pilot PnL</th></tr></thead>
+        <tbody><tr><td>${per(x, "1w")}</td><td>${per(x, "1m")}</td><td>${per(x, "3m")}</td><td>${per(x, "1y")}</td><td>${per(x, "2y")}</td>
+        <td class="${(x.pilot_pnl_usd || 0) >= 0 ? "pos" : "neg"}">${x.pilot_pnl_usd == null ? "—" : (x.pilot_pnl_usd >= 0 ? "+" : "−") + usd(Math.abs(x.pilot_pnl_usd))}</td></tr></tbody></table></div>
+      <p class="muted small" style="margin:0">Returns: backtest, worst drop ${pct(x.record_max_drawdown, 0)}. PnL: what this script made for the demo portfolio (paper). Realized PnL appears once it trades live.</p>
+      <div class="row">
+        <label class="row small"><input type="checkbox" data-pin="${esc(x.id)}" ${pinned ? "checked" : ""}> run</label>
+        <label class="row small"><input type="checkbox" data-ex="${esc(x.id)}" ${excluded ? "checked" : ""} ${manual ? "disabled" : ""}> never</label>
+        <span style="flex:1"></span>
+        <button class="btn sm ghost" data-copy="${esc(x.id)}" type="button">Copy · 5% of profit</button>
+        <button class="btn sm" data-buy="${esc(x.id)}" type="button">${price ? "Buy for " + (Number(BigInt(price) / 10n ** 21n) / 1000).toLocaleString("en-US") + " NEAR" : "Make an offer"}</button>
+      </div>
+      ${state.nftAction?.id === x.id ? `<pre class="code" translate="no">${esc(state.nftAction.text)}</pre>` : ""}
+    </article>`;
+  };
+  const shown = state.showAllScripts ? list : list.filter(running);
   $("#view").innerHTML = `
     <div class="head"><div><h1>Agent</h1>
-      <p class="lede">Choose the scripts yourself or let the agent pick them. Tune it in words or with sliders, or write a script of your own. The agent never trades: it only decides which scripts get capital, inside the rules you signed.</p></div>
-      <span class="chip amber"><span class="d"></span>Settings are saved in this browser</span></div>
-    <div class="grid g2">
+      <p class="lede">Your agent runs your portfolio with scripts. Talk to it, give it tasks, or pick the scripts yourself. It checks every running script once a day. It can never send funds out: every action goes through the rules you signed.</p></div>
+      <span class="chip amber"><span class="d"></span>Private: settings and tasks stay in this browser</span></div>
+    ${commandBox("agent-cmd", { placeholder: "e.g. if BTC below 60000 buy $500 · buy $50 of ETH every friday · no perps" })}
+    <div class="grid g2" style="margin-top:16px">
+      <div class="card stack"><h2>Tasks</h2>
+        ${tasks.length ? `<ul class="events">${tasks.map((t) => `<li><span class="small">${esc(cmd.describeTask(t))}</span><button class="btn sm ghost" data-deltask="${t.id}" type="button">Remove</button></li>`).join("")}</ul>`
+          : `<p class="muted small" style="margin:0">No tasks yet. Conditional (“if ETH above 4000 sell $300”) or recurring (“buy $50 of ETH every friday”).</p>`}</div>
+      <div class="card stack"><h2>Daily check</h2>
+        <p class="muted small" style="margin:0">Once a day the agent checks each running script for crashes, invalid weights, stale prices, unusual turnover, live results drifting from the simulation, slippage and refused orders. A script with a serious problem is paused until you look. Logic is reviewed once per version: the code cannot change after minting.</p>
+        <div class="row">${["ok", "warn", "stop"].map((k) => `<span class="chip ${k === "ok" ? "green" : k === "warn" ? "amber" : "red"}">${Object.values(health).filter((h) => h.status === k).length} ${k === "ok" ? "healthy" : k === "warn" ? "warnings" : "paused"}</span>`).join("")}</div></div>
+    </div>
+    <div class="card-h" style="margin:24px 0 12px"><h2>${state.showAllScripts ? "All scripts" : "Running scripts"} · ${shown.length} of ${list.length}</h2>
+      <div class="row"><span class="muted small">${manual ? "You pick: only “run” scripts, equal shares." : "The agent picks as a risk manager."}</span>
+      <button class="btn sm ghost" id="allscripts" type="button">${state.showAllScripts ? "Show running only" : "Add scripts"}</button></div></div>
+    <div class="grid g2">${shown.map(card).join("") || `<p class="muted small">No script is running. The crypto part waits in USDC.</p>`}</div>
+    <div class="grid g2" style="margin-top:16px">
       <div class="card stack">
-        <h2>Who picks the scripts</h2>
-        <p class="muted small" style="margin:0">${manual ? `<b>You pick.</b> Only ticked scripts run, in equal shares. No hiring or firing.` : `<b>The agent picks</b> as a risk manager: hires after 8 weeks on paper, fires only for breaking a risk rule, splits by inverse volatility. Tick “run” to choose yourself.`}</p>
-        <div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Script</th><th>2-year record</th><th>Worst drop</th><th></th><th></th></tr></thead>
-          <tbody>${list.map(row).join("")}</tbody></table></div>
-        <label class="row small"><input type="checkbox" id="perps" ${s.allowPerps ? "checked" : ""}> Allow scripts that trade perps (Hyperliquid, ≤1x)</label>
-      </div>
-      <div class="card stack">
-        <h2>Tell the agent</h2>
+        <h2>Tune the agent</h2>
         <form class="stack" id="tune"><label class="sr" for="tune-in">Instruction</label>
-          <textarea id="tune-in" rows="3" placeholder="e.g. no perps. skip scripts with drawdown over 20%. max 40% per script" spellcheck="false"></textarea>
-          <div class="row"><button class="btn sm" type="submit">Preview the change</button>
-          <span class="muted small">Works in English and Russian. Nothing applies until you confirm.</span></div></form>
+          <textarea id="tune-in" rows="2" placeholder="e.g. no perps. skip scripts with drawdown over 20%. max 40% per script" spellcheck="false"></textarea>
+          <div class="row"><button class="btn sm" type="submit">Preview the change</button></div></form>
         ${draft ? `<div class="card" style="box-shadow:none">
           ${draft.changes.length ? `<ul class="small" style="margin:0 0 8px;padding-left:18px">${draft.changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
           ${draft.warnings.map((w) => `<p class="muted small" style="margin:0 0 8px">${esc(w)}</p>`).join("")}
           ${draft.changes.length ? `<div class="row"><button class="btn sm green" id="apply">Apply</button><button class="btn sm ghost" id="discard">Discard</button></div>` : ""}</div>` : ""}
-        <h2 style="margin-top:6px">By hand</h2>
+        <label class="row small"><input type="checkbox" id="perps" ${s.allowPerps ? "checked" : ""}> Allow scripts that trade perps (Hyperliquid, ≤1x)</label>
+      </div>
+      <div class="card stack">
+        <h2>By hand</h2>
         <label class="small">At most per script: <b id="mw-v">${pct(s.maxWeight, 0)}</b>
           <input type="range" id="mw" min="0.1" max="1" step="0.05" value="${s.maxWeight}" ${manual ? "disabled" : ""} style="width:100%"></label>
         <label class="small">Skip scripts with 8-week drawdown above: <b id="dd-v">${s.maxRecordDrawdown == null ? "off" : pct(s.maxRecordDrawdown, 0)}</b>
@@ -498,7 +669,7 @@ function agentView() {
     </div>
     <div class="card stack" style="margin-top:16px">
       <h2>Your own script</h2>
-      <p class="muted small" style="margin:0">Describe an idea; NEAR AI drafts a script. Or write it yourself. Every script is checked, backtested, then minted as an NFT (free, storage only) and spends 8 weeks on paper before it can get capital. Followers pay you 5% of their new profit.</p>
+      <p class="muted small" style="margin:0">Describe an idea; NEAR AI drafts a script. Or write it yourself. Every script is checked and backtested on past years, then you can mint it as an NFT right away (free, storage only). The code stays private: the NFT holds only its hash. Followers pay you 5% of their new profit.</p>
       <label class="sr" for="idea">Idea</label>
       <div class="row" style="flex-wrap:nowrap"><input type="text" id="idea" value="${esc(script.idea)}" placeholder="e.g. short ETH when it drops below its 30-day average" autocomplete="off">
         <button class="btn sm" id="draft" type="button" ${live() ? "" : "disabled"} title="${live() ? "" : "Needs the Pilot backend with a NEAR AI Cloud key"}">Draft with NEAR AI</button></div>
@@ -518,6 +689,22 @@ function agentView() {
     set({ excluded: b.checked ? [...s.excluded, id] : s.excluded.filter((x) => x !== id) });
   }));
   $("#perps").onchange = (e) => set({ allowPerps: e.target.checked });
+  bindCommandBox("agent-cmd", false, agentView);
+  document.querySelectorAll("[data-deltask]").forEach((b) => (b.onclick = () => {
+    cmd.saveTasks(cmd.loadTasks().filter((t) => String(t.id) !== b.dataset.deltask));
+    agentView();
+  }));
+  $("#allscripts").onclick = () => { state.showAllScripts = !state.showAllScripts; agentView(); };
+  const nft = CONFIG.nft?.contract || "<nft-contract>";
+  const showAction = (id, text) => { state.nftAction = state.nftAction?.id === id && state.nftAction.text === text ? null : { id, text }; agentView(); };
+  document.querySelectorAll("[data-copy]").forEach((b) => (b.onclick = () => showAction(b.dataset.copy,
+    `Copy-trade ${b.dataset.copy}: your agent follows the script, inside your own policy.\nYou pay 5% of new profit to the NFT holder and 0.25% to Pilot, weekly, only above your previous peak.\n\nnear contract call-function as-transaction ${nft} follow json-args '{"token_id":"${b.dataset.copy}"}' prepaid-gas '30 Tgas' attached-deposit '0.01 NEAR' sign-as <your-agent>.testnet network-config testnet sign-with-keychain send\n\nWallet signing in the site comes with the backend; the call above is the same transaction.`)));
+  document.querySelectorAll("[data-buy]").forEach((b) => (b.onclick = () => {
+    const id = b.dataset.buy, price = chain[id]?.price;
+    showAction(id, price
+      ? `Buy ${id}: the seller gets 99.5%, Pilot 0.5%. You receive the NFT, its record and the 5% from every copier.\n\nnear contract call-function as-transaction ${nft} buy json-args '{"token_id":"${id}"}' prepaid-gas '50 Tgas' attached-deposit '${(Number(BigInt(price) / 10n ** 21n) / 1000)} NEAR' sign-as <you>.testnet network-config testnet sign-with-keychain send`
+      : `${id} is not for sale. The holder can list it with list_for_sale; you can contact them meanwhile.\nHolder: ${chain[id]?.holder || "see the NFT on the explorer"}`);
+  }));
   const slider = (id, key, fmtv, conv = Number) => {
     const el = $("#" + id);
     el.oninput = () => ($(`#${id}-v`).textContent = fmtv(conv(el.value)));
