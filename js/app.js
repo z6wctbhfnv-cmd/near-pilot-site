@@ -1,7 +1,7 @@
 // Pilot web app. Static: reads simulation data from data/*.json; live actions go to CONFIG.apiBase when set.
 import { CONFIG } from "./config.js";
 import { lineChart, sparkline } from "./chart.js";
-import { compileRules } from "./rules.js";
+import { compileRules, parseCustomRule } from "./rules.js";
 import { ask } from "./ask.js";
 import { scriptsOnChain, explorer } from "./chain.js";
 import * as agent from "./agent.js";
@@ -36,7 +36,9 @@ const state = {
   visible: new Set(SERIES.map((s) => s.key)),
   attempts: [],
   cleanup: null,
+  customRules: (() => { try { return JSON.parse(localStorage.getItem("pilot.customRules") || "[]"); } catch { return []; } })(),
 };
+const saveCustom = () => { try { localStorage.setItem("pilot.customRules", JSON.stringify(state.customRules)); } catch { /* private mode */ } };
 
 // ---------------------------------------------------------------------------------------------
 async function load() {
@@ -236,6 +238,16 @@ function rules() {
       </div>
       <div class="card stack" id="review">${c ? reviewHtml(c) : `<h2>What you will sign</h2><p class="muted">Your rules in plain language and the exact policy appear here.</p>`}</div>
     </div>
+    <div class="card stack" style="margin-top:16px">
+      <div class="card-h"><h2>Your own limits</h2><span class="muted small">${state.customRules.length} added</span></div>
+      <p class="muted small" style="margin:0">Tell the agent any extra limit in your words. It turns it into a rule, you see it before it is added, and it is signed together with your policy. Your agent checks these before every action; the NEAR Intents policy above enforces budgets and withdrawals on its own.</p>
+      <form class="row" id="custom-form" style="flex-wrap:nowrap"><label class="sr" for="custom-in">New limit</label>
+        <input type="text" id="custom-in" autocomplete="off" placeholder="max 30% in one asset · 5 trades a day · never buy SOL · stop for the day if down 3%" style="flex:1;min-width:0">
+        <button class="btn sm" type="submit">Add</button></form>
+      <div class="presets" aria-label="Examples">${["max 30% in one asset", "at most 10 trades a day", "leverage at most 2x", "keep at least 20% in stablecoins", "stop for the day if down 3% today", "pause if BTC drops 15% in a day", "never buy SOL"].map((x) => `<button type="button" class="preset" data-cex="${esc(x)}">${esc(x)}</button>`).join("")}</div>
+      <p class="small" id="custom-msg" role="status" style="margin:0"></p>
+      ${state.customRules.length ? `<ul class="checklist" style="margin:0">${state.customRules.map((r, i) => `<li><span style="flex:1">${esc(r.label)}</span> <button class="btn sm ghost" type="button" data-cdel="${i}" aria-label="Remove ${esc(r.label)}">Remove</button></li>`).join("")}</ul>` : ""}
+    </div>
     ${c ? `<div class="grid g2 top-align" style="margin-top:16px">
       <div class="card stack"><h2>Accept the terms</h2>
         <p class="muted small" style="margin:0">The Agent API is a mainnet-only beta. Its operator requires you to accept these before your agent is created.</p>
@@ -253,6 +265,26 @@ function rules() {
     doCompile();
   }));
   $("#compile").onclick = doCompile;
+  const addCustom = (text) => {
+    try {
+      const r = parseCustomRule(text);
+      state.customRules = [...state.customRules.filter((x) => x.kind !== r.kind || ["allowed_assets", "banned_assets", "pause_on_drop"].includes(r.kind) && x.label !== r.label), r];
+      saveCustom();
+      state.signature = null;
+      rules();
+      $("#custom-msg").textContent = `Added: ${r.label}. Sign your rules again to apply it.`;
+    } catch (e) {
+      $("#custom-msg").textContent = e.message;
+    }
+  };
+  $("#custom-form").onsubmit = (e) => { e.preventDefault(); addCustom($("#custom-in").value); };
+  document.querySelectorAll("[data-cex]").forEach((b) => (b.onclick = () => addCustom(b.dataset.cex)));
+  document.querySelectorAll("[data-cdel]").forEach((b) => (b.onclick = () => {
+    state.customRules = state.customRules.filter((_, i) => i !== Number(b.dataset.cdel));
+    saveCustom();
+    state.signature = null;
+    rules();
+  }));
   document.querySelectorAll("[data-acc]").forEach((cb) => (cb.onchange = () => {
     state.accepted[cb.dataset.acc] = cb.checked;
     rules();
@@ -279,9 +311,9 @@ function reviewHtml(c) {
   return `<h2>What you will sign</h2>
     <div><div class="weights" role="img" aria-label="${parts.map(([n, v]) => `${n} ${pct(v, 0)}`).join(", ")}">${parts.filter(([, v]) => v > 0).map(([, v, col]) => `<i style="width:${v * 100}%;background:${col}"></i>`).join("")}</div>
       <div class="legend">${parts.map(([n, v, col]) => `<span><span class="dot" style="background:${col}"></span>${n} ${pct(v, 0)}</span>`).join("")}</div></div>
-    <ul class="checklist">${c.summary.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>
+    <ul class="checklist">${[...c.summary, ...state.customRules.map((r) => `${r.label} (your limit)`)].map((s) => `<li>${esc(s)}</li>`).join("")}</ul>
     ${c.warnings.map((w) => `<div class="warn"><span aria-hidden="true">⚠</span><span>${esc(w)}</span></div>`).join("")}
-    <details><summary>Exact Agent API policy</summary><pre class="code" translate="no" style="margin-top:10px">${esc(JSON.stringify(c.apiPolicy, null, 2))}</pre></details>`;
+    <details><summary>Exact Agent API policy</summary><pre class="code" translate="no" style="margin-top:10px">${esc(JSON.stringify(state.customRules.length ? { ...c.apiPolicy, pilot_limits: state.customRules.map(({ label, ...r }) => r) } : c.apiPolicy, null, 2))}</pre></details>`;
 }
 
 function signHtml(acceptedAll) {
@@ -815,6 +847,7 @@ function agentView(page = state.agentPage || "agent") {
       <div class="settings-body">
         <section ${(state.settingsTab || "general") === "general" ? "" : "hidden"}>
           <h2>General</h2>
+          ${srow("Preset", "A starting point. Change any setting afterwards.", `<div class="row" role="group" aria-label="Preset">${Object.entries(agent.PRESETS).map(([k, [l]]) => `<button type="button" class="chip toggle" data-preset="${k}" aria-pressed="${agent.presetOf(s) === k}">${l}</button>`).join("")}</div>`)}
           ${srow("Who picks the scripts", {
             auto: "The agent picks scripts and sizes them as a risk manager.",
             pick: "You tick “run” on scripts; the agent decides how much each gets.",
@@ -855,7 +888,8 @@ function agentView(page = state.agentPage || "agent") {
         </section>
         <section ${state.settingsTab === "safety" ? "" : "hidden"}>
           <h2>Safety rules</h2>
-          ${srow("Signed policy", "The limits live in your NEAR Intents agent policy, not in the AI. Change them by signing new rules.", `<a class="btn sm ghost" href="#/rules">Edit rules</a>`)}
+          ${srow("Signed policy", "The limits live in your NEAR Intents agent policy, not in the AI. Change them, or add your own limits through the agent, by signing new rules.", `<a class="btn sm ghost" href="#/rules">Edit rules</a>`)}
+          ${srow("Your own limits", state.customRules.length ? esc(state.customRules.map((r) => r.label).join(" · ")) : "None yet. Add any limit in words on the Rules page.", `<b>${state.customRules.length}</b>`)}
           ${srow("Per trade · per day", "Largest single trade and daily total.", `<b>${usd(state.policy.perTransactionUsd)} · ${usd(state.policy.dailyUsd)}</b>`)}
           ${srow("Withdrawals", "Where funds may leave the wallet.", `<b>${state.policy.destinations.length ? esc(state.policy.destinations.join(", ")) : "nowhere"}</b>`)}
           ${srow("Freeze", "Stop every action at once.", `<a class="btn sm ghost" href="#/safety">Open</a>`)}
@@ -1012,6 +1046,7 @@ function agentView(page = state.agentPage || "agent") {
   slider("mw", "maxWeight", (x) => pct(x, 0));
   slider("dd", "maxRecordDrawdown", (x) => (x >= 0.5 ? "off" : pct(x, 0)), (x) => (+x >= 0.5 ? null : +x));
   slider("ww", "windowWeeks", (x) => String(x));
+  document.querySelectorAll("[data-preset]").forEach((b) => (b.onclick = () => set({ ...agent.PRESETS[b.dataset.preset][1] })));
   $("#reset").onclick = () => { state.agentDraft = null; set({ ...agent.DEFAULTS }); };
   $("#tune").onsubmit = (e) => {
     e.preventDefault();

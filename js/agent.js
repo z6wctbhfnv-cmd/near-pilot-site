@@ -14,6 +14,13 @@ export const DEFAULTS = {
   paused: [], pausedByAgent: [], keepRunning: [], ackVersions: {},
 };
 
+export const PRESETS = {
+  careful: ["Careful", { allowPerps: false, maxWeight: 0.3, maxRecordDrawdown: 0.15, allocation: "calm", reviewEvery: 7 }],
+  balanced: ["Balanced", { allowPerps: true, maxWeight: 0.6, maxRecordDrawdown: null, allocation: "calm", reviewEvery: 7 }],
+  bold: ["Bold", { allowPerps: true, maxWeight: 1, maxRecordDrawdown: null, allocation: "return", reviewEvery: 1 }],
+};
+export const presetOf = (s) => Object.keys(PRESETS).find((k) => Object.entries(PRESETS[k][1]).every(([f, v]) => s[f] === v)) || null;
+
 export const ON_PROBLEM = [["pause", "Pause it and tell me"], ["ask", "Ask me, keep running meanwhile"], ["notify", "Only tell me"]];
 export const ON_CHANGE = [["pause", "Pause until I confirm"], ["continue", "Keep copying and tell me"], ["unfollow", "Stop copying"]];
 
